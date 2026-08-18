@@ -10,7 +10,7 @@ case "${1:-up}" in
   up)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:6379" "$IMAGE" \
-      redis-server --save '' --appendonly no >/dev/null
+      redis-server --save '' --appendonly no --enable-debug-command yes >/dev/null
     for _ in $(seq 1 50); do
       if docker exec "$NAME" redis-cli ping 2>/dev/null | grep -q PONG; then
         echo "redis up on 127.0.0.1:${PORT}"
