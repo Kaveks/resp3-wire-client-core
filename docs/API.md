@@ -156,6 +156,14 @@ a command reply would desynchronise every subsequent command on the connection.
 The count of discarded frames is exposed as `pushes_discarded -> int` for
 diagnostics. It is monotonically increasing and resets on `connect`.
 
+The counter reflects frames discarded so far, not frames attributable to a
+given `execute` call. This distinction is real rather than pedantic: Redis 7.4
+answers `DEBUG PROTOCOL push` with the command's own reply first and the `>`
+frame second, so the push is still unread when `execute` returns and is
+discarded by the following call. No test asserts the counter immediately after
+a specific `execute`, and an implementation must not drain trailing pushes
+before returning, which would block waiting for bytes that may never arrive.
+
 ### 4.4 Attribute exposure
 
 `execute` returns `Attributed` values intact. It does not unwrap them.

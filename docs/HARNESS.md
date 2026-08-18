@@ -266,36 +266,51 @@ global flush.
     sorted sets             6
     keyspace and generic    5
     transactions            4
-    protocol and RESP3      6
-    error mapping           4
+    protocol and RESP3      5
+    error mapping           5
                            --
                            50
 
-Strings covers `SET` with options, `GET`, `GETRANGE`, `SETRANGE`, `APPEND`,
-`INCR`, `INCRBYFLOAT`, `STRLEN`, binary safe values including embedded CRLF and
-NUL, and an empty value.
+The four type-identity cases introduced by D11 are drawn from this 50, not
+added to it. `MOVED` parsing and the three identity assertions sit inside error
+mapping and transactions; the `type(result) is set` assertion is the `SMEMBERS`
+case. The suite totals exactly 100 across all channels and the 50/20/20/10
+weighting holds.
 
-Lists covers `RPUSH`, `LRANGE` over a large range, `LPOP` with count, `LINSERT`,
-`LPOS`, and an operation on a missing key.
+Each enumeration below lists exactly as many items as its allocation. A case
+that runs under both protocols counts once here and is designated in section
+3.3, which draws its sixteen from these fifty rather than adding to them.
 
-Hashes covers `HSET`, `HGETALL` under both protocols, `HSTRLEN`, `HDEL`,
-`HEXPIRE`, and a field with a binary name.
+Strings, 8: `SET` with options; `GET` on a missing key; `GETRANGE`; `APPEND`;
+`INCR`; `INCRBYFLOAT`; a binary safe value containing CRLF and NUL; an empty
+value.
+
+Lists, 6: `RPUSH`; `LRANGE` over a large range; `LPOP` with count; `LINSERT`;
+`LPOS`; `LRANGE` on a missing key.
+
+Hashes, 6: `HSET`; `HGETALL`; `HSTRLEN`; `HDEL`; `HEXPIRE`; a field with a
+binary name.
+
+`HGETALL` is one of the three RESP2 designations in section 3.3, where it
+returns a flat array rather than a map. It is one case, run on a RESP2
+connection.
 
 `HRANDFIELD` was removed as nondeterministic. `HEXPIRE` is unconditional
 because the server is pinned at 7.4 per D12; a conditional case would break the
 fixed 100 case denominator.
 
-Sets covers `SADD`, `SMEMBERS` including the direct `type(result) is set`
-assertion, `SINTERCARD`, `SMISMEMBER`, and set algebra across three keys.
+Sets, 5: `SADD`; `SMEMBERS`, which carries the direct `type(result) is set`
+assertion per D11; `SINTERCARD`; `SMISMEMBER`; set algebra across three keys.
 
 `SPOP` with count was removed as nondeterministic; `SMISMEMBER` replaces it.
 
-Sorted sets covers `ZADD`, `ZRANGE` with scores under RESP3 where scores are
-doubles, `ZSCORE` returning a double, `ZRANGEBYLEX`, `ZADD GT`, and infinity
-scores.
+Sorted sets, 6: `ZADD`; `ZRANGE WITHSCORES`, where RESP3 gives doubles and
+RESP2 gives bulk strings; `ZSCORE`; `ZRANGEBYLEX`; `ZADD GT`; infinity scores.
 
-Keyspace covers `TYPE`, `TTL` on a persistent and a missing key, `EXPIRETIME`
-on a volatile key, `OBJECT ENCODING`, and `LCS`.
+Keyspace, 5: `TYPE`; `TTL` on a persistent key; `TTL` on a missing key;
+`EXPIRETIME` on a volatile key; `OBJECT ENCODING`.
+
+`LCS` was listed in error and is removed; the five above are the allocation.
 
 `RANDOMKEY`, `SCAN MATCH`, and `TTL` on a volatile key were removed as
 nondeterministic across two clients sharing a keyspace: `RANDOMKEY` is not
@@ -303,18 +318,24 @@ prefix scopable, `SCAN` order is cursor dependent, and two `TTL` reads straddle
 a second boundary. `EXPIRETIME` returns an absolute unix time and is stable
 across both reads.
 
-Transactions covers a successful `MULTI`/`EXEC` through a pipeline, an `EXEC`
-containing a per command error, a `DISCARD`, and a `WATCH` that aborts.
+Transactions, 4: a successful `MULTI`/`EXEC` through a pipeline; an `EXEC`
+containing a per command error, which carries the D11 assertion that the nested
+error is an `ErrorReply` and not an exception; a `DISCARD`; a `WATCH` that
+aborts.
 
-Protocol and RESP3 covers negotiated version under `protocol=3`, negotiated
-version under `protocol=2`, `server_info` contents after HELLO, `DEBUG PROTOCOL`
-for map and array, a verbatim reply, and a double reply.
+Protocol and RESP3, 5: negotiated version under `protocol=3`; negotiated
+version under `protocol=2`; `server_info` contents after HELLO; `DEBUG PROTOCOL`
+for map and for array, one case covering both; a verbatim reply carrying the
+`VerbatimBytes.format` assertion.
+
+A double reply is covered by `ZSCORE` in sorted sets and is not duplicated
+here.
 
 `DEBUG PROTOCOL attrib` is excluded from the oracle entirely: redis-py raises on
 it. Attributes are verified in the chunking channel, which is now their sole
 enforcement per D11.
 
-Error mapping covers the four required codes. Each is produced by a real
+Error mapping, 5: the four required codes plus `MOVED`. Each is produced by a real
 server condition, never by a synthesized error string: `WRONGTYPE` from a list
 operation on a string key, `NOSCRIPT` from `EVALSHA` with an unknown digest,
 `BUSYGROUP` from a duplicate `XGROUP CREATE`, and a generic error from a
@@ -326,9 +347,10 @@ not go through the live server.
 ### 3.3 What the RESP2 half tests
 
 Sixteen of the fifty cases run against a `protocol=2` connection with a
-`protocol=2` redis-py: 3 strings, 2 lists, 3 hashes covering the flat-array
-shape of `HGETALL`, 2 sets, 3 sorted sets covering scores as bulk strings
-rather than doubles, 1 keyspace, 1 transaction, and 1 negotiation. Their purpose is degradation fidelity: under RESP2 a
+`protocol=2` redis-py. They are drawn from the fifty, not added to them: 3
+strings, 2 lists, 2 hashes including `HGETALL` for its flat-array shape, 2 sets,
+3 sorted sets for scores as bulk strings rather than doubles, 2 keyspace, 1
+transaction, and 1 negotiation. Their purpose is degradation fidelity: under RESP2 a
 hash reply is a flat list and a score is a bulk string, and an implementation
 that returns RESP3 shapes under a RESP2 connection is wrong even though the
 values are arguably better.
