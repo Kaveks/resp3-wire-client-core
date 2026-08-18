@@ -13,13 +13,13 @@ from I/O::
 ``ConnectionError`` and ``TimeoutError`` shadow the builtins of the same name
 within this package. That is deliberate, and they do not subclass them.
 
-The parsing half is complete. ``Connection``, ``ConnectionPool``, and
-``Pipeline`` are added in the steps that follow, and this module's re-exports
-grow to the full public surface with them.
+``ConnectionPool`` and ``Pipeline`` are added in the step that follows, and
+this module's re-exports grow to the full public surface with them.
 """
 
 from __future__ import annotations
 
+from .connection import Connection
 from .errors import (
     BusyGroupError,
     ConnectionError,
@@ -42,6 +42,7 @@ __all__ = [
     "ErrorReply",
     "PushMessage",
     "unwrap",
+    "Connection",
     "RedisError",
     "ProtocolError",
     "ConnectionError",
