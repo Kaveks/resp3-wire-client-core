@@ -284,9 +284,10 @@ Exception mapping, keyed on `ErrorReply.code`:
     MOVED       -> MovedError
     NOSCRIPT    -> NoScriptError
     BUSYGROUP   -> BusyGroupError
-    everything else -> RedisError
+    everything else -> ServerError
 
-All four specific types subclass `RedisError`. The full hierarchy, including
+All four specific types subclass `ServerError`, which subclasses
+`RedisError`. The full hierarchy, including
 connection and timeout errors that do not originate from a server reply, is
 specified in `docs/API.md`.
 
