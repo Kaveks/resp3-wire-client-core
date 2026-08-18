@@ -118,3 +118,10 @@ points establish a trend where two establish only a difference, and the wider
 range separates the classes by a factor that no allocator artifact can bridge.
 It remains a relative comparison, so D9's constraint holds unchanged: absolute
 wall clock assertions are still prohibited.
+
+## D15. MovedError degrades rather than raises on malformed text
+Ratified 2026-08-18.
+Error text not shaped like `MOVED <slot> <address>` yields `slot == -1` and an
+empty address rather than raising. Raising from an exception constructor would
+replace a diagnosable server error with an unrelated failure. Only a broken
+server produces this and no specified case exercises it.
