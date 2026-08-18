@@ -298,8 +298,13 @@ connection.
 because the server is pinned at 7.4 per D12; a conditional case would break the
 fixed 100 case denominator.
 
-Sets, 5: `SADD`; `SMEMBERS`, which carries the direct `type(result) is set`
-assertion per D11; `SINTERCARD`; `SMISMEMBER`; set algebra across three keys.
+Sets, 5: `SADD`; `SMEMBERS` under RESP3, carrying the direct
+`type(result) is set` assertion per D11; `SINTERCARD`; `SMISMEMBER`; `SUNION`
+across three keys.
+
+`SMEMBERS` is never designated RESP2. Its assertion is that a RESP3 `~` frame
+yields a Python `set`, which a RESP2 connection cannot exercise. The RESP2 side
+of set handling is carried by `SUNION` per section 3.3.
 
 `SPOP` with count was removed as nondeterministic; `SMISMEMBER` replaces it.
 
@@ -361,17 +366,20 @@ sixteen concentrate where the shape genuinely differs:
                        string vs double; ZADD; infinity scores as strings
     strings        3   GET on a missing key, null bulk vs null; SET; APPEND
     lists          2   LRANGE on a missing key, empty array; RPUSH
-    sets           2   SMEMBERS as array under both, confirming the agent does
-                       NOT return a set under RESP2; SADD
+    sets           2   SUNION as a flat array rather than a set, confirming
+                       the agent does NOT return a set under RESP2; SADD
     protocol       1   negotiated version under protocol=2
     transactions   1   EXEC with a nested error, ErrorReply under both
                   --
                   16
 
-The sets designation is the subtle one: under RESP2 the wire carries `*`, so a
-correct client returns a `list`. An implementation that returns a `set` because
-it post-processes by command name rather than by wire type fails here, which is
-the mirror of the RESP3 `type(result) is set` assertion.
+The sets designation is the subtle one. `SUNION` returns `~` under RESP3 and `*`
+under RESP2, so a correct client returns a `set` in the first case and a `list`
+in the second. An implementation that post-processes by command name rather than
+by wire type returns a `set` in both and fails here. This is the mirror of the
+RESP3 `type(result) is set` assertion on `SMEMBERS`, and the two cases are
+distinct: `SMEMBERS` is RESP3 only, `SUNION` is one of the sixteen RESP2
+designations.
 
 Keyspace has no RESP2 designation. `TYPE`, `TTL`, `EXPIRETIME`, and
 `OBJECT ENCODING` return identical shapes under both protocols, so designating
