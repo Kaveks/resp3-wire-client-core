@@ -346,13 +346,36 @@ not go through the live server.
 ### 3.3 What the RESP2 half tests
 
 Sixteen of the fifty cases run against a `protocol=2` connection with a
-`protocol=2` redis-py. They are drawn from the fifty, not added to them: 3
-strings, 2 lists, 2 hashes including `HGETALL` for its flat-array shape, 2 sets,
-3 sorted sets for scores as bulk strings rather than doubles, 2 keyspace, 1
-transaction, and 1 negotiation. Their purpose is degradation fidelity: under RESP2 a
-hash reply is a flat list and a score is a bulk string, and an implementation
-that returns RESP3 shapes under a RESP2 connection is wrong even though the
-values are arguably better.
+`protocol=2` redis-py. They are drawn from the fifty, not added to them.
+
+Their purpose is degradation fidelity: under RESP2 a hash reply is a flat array
+and a score is a bulk string, and an implementation that returns RESP3 shapes on
+a RESP2 connection is wrong even where the values look better.
+
+That purpose constrains which cases are designated. A command whose reply shape
+is identical under both protocols tests nothing when designated RESP2, so the
+sixteen concentrate where the shape genuinely differs:
+
+    hashes         3   HGETALL flat array vs map; HSET; a binary field name
+    sorted sets    4   ZRANGE WITHSCORES flat array vs pairs; ZSCORE bulk
+                       string vs double; ZADD; infinity scores as strings
+    strings        3   GET on a missing key, null bulk vs null; SET; APPEND
+    lists          2   LRANGE on a missing key, empty array; RPUSH
+    sets           2   SMEMBERS as array under both, confirming the agent does
+                       NOT return a set under RESP2; SADD
+    protocol       1   negotiated version under protocol=2
+    transactions   1   EXEC with a nested error, ErrorReply under both
+                  --
+                  16
+
+The sets designation is the subtle one: under RESP2 the wire carries `*`, so a
+correct client returns a `list`. An implementation that returns a `set` because
+it post-processes by command name rather than by wire type fails here, which is
+the mirror of the RESP3 `type(result) is set` assertion.
+
+Keyspace has no RESP2 designation. `TYPE`, `TTL`, `EXPIRETIME`, and
+`OBJECT ENCODING` return identical shapes under both protocols, so designating
+one would consume a case without testing degradation.
 
 ## 4. Channel 2: chunking, 20 cases
 
