@@ -90,6 +90,23 @@ may have failed. Raising on the first such element would make a partially
 failed transaction unrepresentable. Section 6 defines when an `ErrorReply`
 becomes a raised exception.
 
+### 2.4 PushMessage
+
+    class PushMessage:
+        kind: str
+        data: list
+
+Represents a RESP3 out of band push frame. `kind` is the first element of the
+frame decoded as UTF-8, for example `invalidate` or `message`. `data` is the
+remaining elements, parsed by the normal rules.
+
+A push frame is a complete reply in its own right. It is never merged into the
+reply of a pending command, and it is never wrapped by an attribute.
+
+Equality compares both fields. Unlike `Attributed`, this type has no delegating
+behavior, because redis-py has no equivalent value and no oracle comparison
+involves it.
+
 ## 3. RESP2 type mapping
 
     Wire            Example                 Python
@@ -129,6 +146,8 @@ recoverable and is not tested.
     % map             %2\r\n...                      dict
     ~ set             ~3\r\n...                      set
     | attribute       |1\r\n...                      decorates the next value
+    ! blob error      !9\r\nERR broke\r\n            ErrorReply
+    > push            >2\r\n...                      PushMessage
 
 ### 4.1 Doubles
 
@@ -188,6 +207,34 @@ still emit the RESP2 forms `$-1\r\n` and `*-1\r\n` even under RESP3. The parser
 accepts all three and produces `None` for each. Being permissive here costs
 nothing and avoids a class of spurious failure.
 
+### 4.7 Blob errors
+
+`!` is a length prefixed error. It parses into `ErrorReply` by exactly the same
+rules as `-`, including code extraction and UTF-8 decoding with surrogate
+escaping. The distinction between the two wire forms carries no actionable
+information and is not preserved in the result.
+
+Unlike `-`, a blob error may legally contain CR or LF inside its payload, since
+its length is declared. The code is still the first whitespace delimited token.
+
+### 4.8 Push messages
+
+`>` introduces an out of band frame. Redis emits these for client side caching
+invalidation, pubsub delivery, and monitor output. They can arrive at any point
+in the stream, including between a command being written and its reply
+arriving.
+
+The parser produces a `PushMessage` and returns it from `gets` like any other
+complete reply. It does not filter, buffer, or reorder push frames, and it has
+no knowledge of which frames a caller considers solicited.
+
+A push frame is never empty; a `>0\r\n` frame is a protocol error.
+
+Handling push frames is a client concern, specified in `docs/API.md`. The
+client package does not expose pubsub abstractions. The requirement here is
+narrower and is about robustness: a client that cannot parse `>` desynchronises
+permanently the first time client tracking is enabled on its connection.
+
 ## 5. Attribute semantics
 
 An attribute frame `|N\r\n` is followed by `2N` values forming its dictionary,
@@ -219,8 +266,8 @@ undecorated value is returned bare. The parser does not wrap everything.
 
 ## 6. Errors: value or exception
 
-The parser always produces `ErrorReply` as a value. It never raises on a server
-error.
+The parser always produces `ErrorReply` as a value, from both `-` and `!`
+frames. It never raises on a server error.
 
 The client raises. When a command's top level reply is an `ErrorReply`, the
 client converts it to an exception and raises it. When an `ErrorReply` appears
@@ -316,21 +363,5 @@ repeatedly copies a growing buffer with slicing.
 These are unresolved and block the sections they touch. Each needs a
 maintainer decision before `spec/instruction.md` is written.
 
-**O1. Push messages.** RESP3 defines `>` for out of band push, used by pubsub,
-client tracking, and monitor. The feature surface in the project brief does not
-mention pubsub, but a client that cannot parse a push frame will break on any
-connection where tracking is enabled. Recommendation: the parser recognises `>`
-and produces a distinct `PushMessage` value; the client does not implement
-pubsub. Cost is roughly twenty lines. Benefit is that the protocol coverage is
-honest rather than conveniently narrow, which a reviewer will notice.
-
-**O2. Blob errors.** RESP3 defines `!` for length prefixed errors. The brief
-lists "Errors" for RESP3 without distinguishing them. Recommendation: parse `!`
-into `ErrorReply` identically to `-`, since the distinction carries no
-actionable information.
-
-**O3. Attribute exposure on the client surface.** Section 5 defines what the
-parser produces. Whether the client's public read path unwraps `Attributed`
-before returning, or passes it through, is an API question rather than a
-protocol one. It is deferred to `docs/API.md`, but it must be decided before
-the oracle is built, because unwrapping changes what the oracle compares.
+None. O1 and O2 were resolved on 2026-08-18 and are folded into sections 2.4,
+4.7, and 4.8. O3 is resolved in `docs/API.md` section 4.4.
