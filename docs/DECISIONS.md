@@ -19,8 +19,14 @@ Ratified 2026-08-18.
 
 Ratified 2026-08-18.
 `Attributed.__eq__` and `__hash__` delegate to the wrapped value. Known cost:
-`isinstance(x, bytes)` is false for a wrapped bytes value. See D11 for the
-consequence discovered later.
+`isinstance(x, bytes)` is false for a wrapped bytes value.
+
+The delegation was chosen so the oracle could compare attributed values against
+redis-py transparently. D11 later established that redis-py raises on attribute
+frames rather than discarding them, so no oracle case carries one and the
+delegation buys nothing there. It is retained because it remains correct for
+callers, and because the sealed delegation case in HARNESS.md 4.4 asserts it
+directly.
 
 ## D4. Verbatim strings are a bytes subclass
 
@@ -54,6 +60,8 @@ Ratified 2026-08-18. Resolves O2 of PROTOCOL.md.
 ## D9. Relative timing ratios permitted for complexity verification
 
 Ratified 2026-08-18. Resolves O1 of HARNESS.md.
+SUPERSEDED by D14 on 2026-08-18. The permission stands; the specific metric
+below does not. Do not implement the bound stated here.
 Absolute wall clock assertions remain prohibited. Channel 4 may assert
 T(8MB)/T(1MB) < 16.0, minimum of 5 trials, against an ideal linear 8.0 and a
 quadratic 64.0. This is the only sanctioned use; any new one requires
@@ -122,10 +130,17 @@ The replacement measures per-byte cost across a wider size range:
 
     assert per_byte[64MB] / per_byte[1MB] < 8.0
 
-A linear parser holds per-byte cost roughly constant; the reference measures
-1.8x across the 64x range. A quadratic parser's per-byte cost grows with size
-directly, giving a ratio near 64. The bound of 8.0 sits an order of magnitude
-from both.
+A linear parser holds per-byte cost roughly constant. The reference measures
+1.8x across the 64x range, the residual growth coming from allocator and cache
+effects rather than from the algorithm. A quadratic parser's per-byte cost grows
+in proportion to input size, so across a 64x range it grows 64x.
+
+The bound of 8.0 sits between them with room on both sides: 4.4x above what the
+reference measures, 8x below what a quadratic implementation would produce. That
+is narrower headroom than the two-point ratio appeared to offer, but unlike that
+ratio it is headroom against a real signal rather than against measurement noise.
+If the flake budget shows the reference approaching 8.0 on a loaded sandbox, the
+correct response is to widen the size range rather than to raise the bound.
 
 This is a stronger discriminator than the two-point ratio for two reasons: three
 points establish a trend where two establish only a difference, and the wider
@@ -135,7 +150,7 @@ wall clock assertions are still prohibited.
 
 ## D15. MovedError degrades rather than raises on malformed text
 
-Ratified 2026-08-18.
+Ratified 2026-08-18. Resolves the step 3 note on unparseable MOVED text.
 Error text not shaped like `MOVED <slot> <address>` yields `slot == -1` and an
 empty address rather than raising. Raising from an exception constructor would
 replace a diagnosable server error with an unrelated failure. Only a broken
