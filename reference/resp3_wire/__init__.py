@@ -10,11 +10,14 @@ from I/O::
     pool.py         ConnectionPool
     pipeline.py     Pipeline
 
+These module paths are part of the contract. Private modules may be added, but
+these may not be moved or renamed, because ``parser`` and ``protocol`` are
+checked individually for their independence from I/O. That check is transitive:
+whatever those two import must satisfy it too, which is why ``errors`` imports
+nothing beyond ``__future__``.
+
 ``ConnectionError`` and ``TimeoutError`` shadow the builtins of the same name
 within this package. That is deliberate, and they do not subclass them.
-
-``ConnectionPool`` and ``Pipeline`` are added in the step that follows, and
-this module's re-exports grow to the full public surface with them.
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ from .errors import (
     WrongTypeError,
 )
 from .parser import NEED_MORE, RespParser
+from .pipeline import Pipeline
+from .pool import ConnectionPool
 from .protocol import Attributed, ErrorReply, PushMessage, VerbatimBytes, unwrap
 
 __all__ = [
@@ -43,6 +48,8 @@ __all__ = [
     "PushMessage",
     "unwrap",
     "Connection",
+    "ConnectionPool",
+    "Pipeline",
     "RedisError",
     "ProtocolError",
     "ConnectionError",
