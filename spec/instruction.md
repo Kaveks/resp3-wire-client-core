@@ -352,7 +352,16 @@ since a connection was last used, check it with `PING` before handing it out.
 Discard one that fails and try another.
 
 `release` returns a connection to the idle set or discards it per the poisoning
-rules. Releasing a connection the pool did not issue raises `ValueError`.
+rules. Releasing a connection the pool did not issue raises `ValueError`, as
+does releasing one the pool is not currently lending. Silently accepting a
+double release would put one connection in the idle set twice and hand it to
+two borrowers. A release arriving after `close` is a discard rather than an
+error, since raising there would mask whatever exception the caller's block was
+already propagating.
+
+`push()` with no arguments raises `ValueError`, for the same reason as
+`execute()`. `Pipeline` may use internal `Connection` methods to write without
+reading, since the public `execute` couples one write to one read.
 
 `close` closes every connection, idle and in use. Subsequent `acquire` raises
 `ConnectionError`.

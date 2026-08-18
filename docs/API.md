@@ -288,7 +288,15 @@ last use. The check is a `PING`. A connection failing it is discarded and
 another is tried.
 
 `release` returns a connection to the idle set, or discards it per section 6.3.
-Releasing a connection the pool did not issue raises `ValueError`.
+Releasing a connection the pool did not issue raises `ValueError`, as does
+releasing one the pool is not currently lending. A second release of an
+already-returned connection must not be silently accepted: it would place one
+connection in the idle set twice and hand it to two borrowers concurrently,
+which is the cross-talk this pool exists to prevent.
+
+A release arriving after `close` is a discard, not an error. A borrower unwinding
+a `with` block after another thread closed the pool has done nothing wrong, and
+raising there would mask whatever exception the block was already propagating.
 
 `connection()` is the preferred interface. It releases on both normal exit and
 exception, including `KeyboardInterrupt`.
@@ -362,6 +370,14 @@ Or, preferred:
     __len__() -> int              queued command count
 
 `push` encodes and buffers a command. It performs no I/O and never blocks.
+`push()` with no arguments raises `ValueError`, matching `execute()` in section
+4.2 and for the same reason: an empty command array draws no reply, so the batch
+would come up one short and block.
+
+`Pipeline` may use internal `Connection` methods to write without reading. The
+public `execute` couples one write to one read by definition, so pipelining
+cannot be built on it. That seam is internal and unspecified; what is specified
+is the observable behavior in this section.
 
 `execute` writes every buffered command before reading any reply, then reads
 exactly as many replies as there were commands and returns them as a list in

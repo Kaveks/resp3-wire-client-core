@@ -155,3 +155,22 @@ Error text not shaped like `MOVED <slot> <address>` yields `slot == -1` and an
 empty address rather than raising. Raising from an exception constructor would
 replace a diagnosable server error with an unrelated failure. Only a broken
 server produces this and no specified case exercises it.
+
+## D16. Release semantics and the pipeline seam
+
+Ratified 2026-08-18. Resolves the step 5 judgement calls.
+
+Releasing a connection the pool is not currently lending raises `ValueError`,
+on the same footing as releasing a foreign one. Accepting it silently would
+place one connection in the idle set twice and lend it to two borrowers, which
+is the failure the pool channel exists to detect.
+
+A release arriving after `close` is a discard. A borrower unwinding its `with`
+block after another thread closed the pool has done nothing wrong, and raising
+there masks the exception already in flight. This was found by repeated runs
+rather than by reasoning, and is the reason the flake budget exists.
+
+`Pipeline` may use internal `Connection` methods. Writing every command before
+reading any reply cannot be expressed through `execute`, which couples one write
+to one read. The seam is internal and unspecified; only the observable behavior
+in `docs/API.md` section 7 is contractual.
