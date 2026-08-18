@@ -23,6 +23,10 @@ sans-io component: it is driven by byte chunks handed to it and never performs
 I/O itself. This is checked structurally against the modules' abstract syntax
 trees.
 
+The constraint is transitive. Whatever those two modules import must satisfy it
+too, so reaching I/O through an intermediate module does not satisfy it. The
+check follows the import graph rather than stopping at the two named files.
+
 Starter stubs are at `/app/resp3_wire/`. Visible tests are at `/app/tests/`.
 
 ## Environment
@@ -285,10 +289,15 @@ reconnect implicitly.
 
 ### Negotiation
 
-On `connect` with `protocol=3`, send `HELLO 3`, with `AUTH` and `SETNAME`
-arguments appended when configured, and read one reply.
+On `connect` with `protocol=3`, send `HELLO 3`, with `SETNAME` arguments
+appended when a client name was configured, and read one reply. There is no
+authentication: `Connection` takes no credentials and no AUTH path exists.
 
 A successful reply sets `protocol_version` to 3 and populates `server_info`.
+Under RESP3 that reply is a `%` map and becomes `server_info` directly. A server
+answering HELLO with a flat array instead requires pairing consecutive elements
+into a dict. `server_info` is always a `dict` whichever shape carried it, with
+`bytes` keys.
 
 A `ServerError` reply means the server does not support HELLO or does not
 support protocol 3, including servers predating Redis 6 which answer with an
@@ -324,6 +333,11 @@ fell back.
 `acquire` reuses an idle connection or creates one up to `max_connections`. At
 capacity with none idle it blocks until one is released or `timeout` elapses,
 then raises `TimeoutError`.
+
+A `timeout` of `None` means socket operations block indefinitely, but acquisition
+does not: `acquire` always applies a bound, using 30 seconds when `timeout` is
+`None`. A pool that can block forever at capacity is a deadlock rather than a
+configuration.
 
 When `health_check_interval` is nonzero and that many seconds have elapsed
 since a connection was last used, check it with `PING` before handing it out.
