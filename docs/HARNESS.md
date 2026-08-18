@@ -1,6 +1,6 @@
 # Harness contract
 
-Status: draft 2026-08-18. Three open items in section 9.
+Status: ratified 2026-08-18. Frozen.
 Owner: maintainers.
 
 Defines how an implementation of `resp3_wire` is graded: what each channel
@@ -533,48 +533,13 @@ assumes a server already exists and never uses the default port.
 
 ## 9. Open items
 
-**O1. The second resource metric requires a determinism deviation.**
+None. O1, O2, and O3 were resolved and ratified on 2026-08-18.
 
-Peak memory alone does not separate a correct parser from one that copies its
-buffer on every consume. Both hold roughly the payload plus the value at peak.
-The distinguishing behavior is total allocation churn, which `tracemalloc`
-does not expose: its snapshots report currently live blocks, not cumulative
-allocation.
+O1: relative time ratios are permitted as a narrow exception to the timing
+rule, for detecting quadratic buffer churn in channel 4. See D9.
 
-The available options are a scaling ratio measured in wall time, feeding 1 MB
-and then 8 MB in fixed size chunks and asserting the time ratio stays under 16
-where linear is 8 and quadratic is 64, taking the minimum of 5 runs; or
-dropping the two cases and redistributing them within the resource channel; or
-dropping the copying check entirely and accepting that a quadratic parser
-passes.
+O2: probe assumptions verified against redis-py 8.1.0. Section 2.8 stands.
 
-The scaling ratio is a comparison rather than an absolute threshold, which
-makes it far more robust than a throughput number, and the bound of 16 against
-a linear expectation of 8 is loose. It is nonetheless a timing assertion and
-`CLAUDE.md` forbids those. Two cases out of one hundred are at stake.
-
-Recommendation: take the scaling ratio, amend `CLAUDE.md` to permit ratio based
-timing assertions with a documented justification, and verify it survives the
-flake budget. If it does not survive 20 runs, drop it.
-
-**O2. redis-py behavior is assumed in two places.**
-
-Section 2.8's probe treats verbatim prefix stripping and attribute discarding
-as assumptions to be verified at run time rather than as facts. This is the
-right posture, but it means a probe failure aborts grading. Confirm the assumed
-behavior against redis-py 8.1.0 during reference development so that a probe
-abort at grading time is a genuine surprise rather than a known risk.
-
-**O3. `DEBUG PROTOCOL` requires a server configuration flag.**
-
-Redis 7 gates `DEBUG` behind `enable-debug-command`, which is not settable at
-runtime and must be passed at server startup. Six oracle cases and the entire
-probe depend on it, as does the `DEBUG SLEEP` used for timeout poisoning.
-
-The server started by `tests/test.sh` must pass `--enable-debug-command yes`.
-This must also hold for the development helper in `tools/redis_dev.sh`, which
-currently does not pass it, and for any server the agent starts during its own
-rollout, which means `instruction.md` must document the flag.
-
-Without this the harness fails at the probe and scores nothing, which would
-present as a broken task rather than as a failed implementation.
+O3: `--enable-debug-command yes` is mandated for every server invocation, in
+`tests/test.sh`, in `tools/redis_dev.sh`, and in the rollout environment. See
+D10.
