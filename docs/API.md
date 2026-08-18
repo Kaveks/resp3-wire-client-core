@@ -34,8 +34,9 @@ separation is checked per module path.
     from resp3_wire import (
         RespParser, NEED_MORE,
         Attributed, VerbatimBytes, ErrorReply, PushMessage,
+        unwrap,
         Connection, ConnectionPool, Pipeline,
-        RedisError, ProtocolError, ConnectionError, TimeoutError,
+        RedisError, ProtocolError, ConnectionError, TimeoutError, ServerError,
         WrongTypeError, MovedError, NoScriptError, BusyGroupError,
     )
 
@@ -182,8 +183,11 @@ On `connect`, when `protocol` is 3, the connection sends:
 
     HELLO 3
 
-followed by `AUTH` and `SETNAME` arguments if credentials or a client name were
-configured. It then reads one reply.
+followed by `SETNAME` arguments if a client name was configured. It then reads
+one reply.
+
+Credentials are out of scope per D13. `Connection` takes no username or
+password and no AUTH path is implemented.
 
 Three outcomes:
 

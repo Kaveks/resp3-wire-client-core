@@ -109,9 +109,19 @@ presence means the matrix is wrong.
 
 `ERROR` compares `code` and `message` as strings.
 
-`EXC` compares `type(actual) is type(expected)` and then `code`. Message text
-is not compared, because redis-py's exception message formatting is its own
-concern and is not part of this contract.
+`EXC` and `ERROR` are mutually comparable and normalize to a common form
+before comparison, per D11. Each side yields a code: for an `ErrorReply` it is
+`.code`; for a `resp3_wire` exception it is `.code`; for a redis-py exception it
+is the first whitespace delimited token of `str(exc)`, uppercased. Only codes
+compare. Message text and exception class do not, because redis-py's classes
+live in another package and its nested `EXEC` errors are exception instances
+where this contract requires `ErrorReply`.
+
+Exception identity is therefore not established by the oracle. Three dedicated
+cases assert it directly, with no redis-py involvement: a top level `WRONGTYPE`
+raises `WrongTypeError`; a nested `EXEC` error is an `ErrorReply` and not an
+exception; and a `MOVED` error string parsed through the parser yields
+`MovedError` with correct `slot` and `address`.
 
 `PUSH` compares `kind` and then recurses into `data`. It does not arise in the
 oracle, since redis-py has no counterpart, and exists here for the sealed
@@ -144,10 +154,16 @@ asserted directly by a dedicated sealed case (section 4.4), so a broken
 delegation produces one specific failure rather than a scatter of confusing
 oracle failures.
 
-A `set` containing an unhashable member cannot exist, so the list fallback in
-`docs/PROTOCOL.md` section 4.5 appears to the comparator as a `LIST` on the
-agent side. If redis-py returns a `SET` there, that is a class mismatch and a
-divergence. No command in the matrix triggers this.
+redis-py returns `list` for every RESP3 set, by deliberate design, because a
+set may contain unhashable members. Per D11 the comparator therefore permits
+one asymmetry: agent `SET` against redis-py `LIST` is not a class mismatch.
+Both sides canonicalize to a sorted list of canonical keys and compare
+elementwise.
+
+This asymmetry would let a `list` pass where the contract requires a `set`, so
+one oracle case asserts `type(result) is set` on a RESP3 `SMEMBERS` reply
+directly, outside the comparator. That case is the enforcement; the comparator
+is only the comparison.
 
 ### 2.6 Attribute handling
 
@@ -199,14 +215,17 @@ each RESP3 type, records what redis-py returns, and asserts that the recorded
 behavior matches what this document assumes:
 
     verbatim   redis-py returns the payload with the format prefix stripped
-    attribute  redis-py returns the decorated value with no attribute surfaced
+    attribute  redis-py RAISES InvalidResponse; it does not discard the frame
     double     float
     bignum     int
     true       bool
     null       None
     map        dict
-    set        set
+    set        list, not set (redis-py returns sets as lists always)
     push       not delivered as a command reply
+
+The attribute and set entries were measured against redis-py 8.1.0 and Redis
+7.4.10 and contradict what this document originally assumed. See D11.
 
 If a probe assertion fails, the harness aborts with a configuration error
 rather than scoring. A mismatch means redis-py changed behavior between the
@@ -259,25 +278,41 @@ NUL, and an empty value.
 Lists covers `RPUSH`, `LRANGE` over a large range, `LPOP` with count, `LINSERT`,
 `LPOS`, and an operation on a missing key.
 
-Hashes covers `HSET`, `HGETALL` under both protocols, `HRANDFIELD` with values,
-`HDEL`, `HEXPIRE` if available, and a field with a binary name.
+Hashes covers `HSET`, `HGETALL` under both protocols, `HSTRLEN`, `HDEL`,
+`HEXPIRE`, and a field with a binary name.
 
-Sets covers `SADD`, `SMEMBERS`, `SINTERCARD`, `SPOP` with count, and set
-algebra across three keys.
+`HRANDFIELD` was removed as nondeterministic. `HEXPIRE` is unconditional
+because the server is pinned at 7.4 per D12; a conditional case would break the
+fixed 100 case denominator.
+
+Sets covers `SADD`, `SMEMBERS` including the direct `type(result) is set`
+assertion, `SINTERCARD`, `SMISMEMBER`, and set algebra across three keys.
+
+`SPOP` with count was removed as nondeterministic; `SMISMEMBER` replaces it.
 
 Sorted sets covers `ZADD`, `ZRANGE` with scores under RESP3 where scores are
 doubles, `ZSCORE` returning a double, `ZRANGEBYLEX`, `ZADD GT`, and infinity
 scores.
 
-Keyspace covers `TYPE`, `TTL` on a volatile and a persistent key, `OBJECT
-ENCODING`, `RANDOMKEY` within a prefix, and `SCAN` with `MATCH`.
+Keyspace covers `TYPE`, `TTL` on a persistent and a missing key, `EXPIRETIME`
+on a volatile key, `OBJECT ENCODING`, and `LCS`.
+
+`RANDOMKEY`, `SCAN MATCH`, and `TTL` on a volatile key were removed as
+nondeterministic across two clients sharing a keyspace: `RANDOMKEY` is not
+prefix scopable, `SCAN` order is cursor dependent, and two `TTL` reads straddle
+a second boundary. `EXPIRETIME` returns an absolute unix time and is stable
+across both reads.
 
 Transactions covers a successful `MULTI`/`EXEC` through a pipeline, an `EXEC`
 containing a per command error, a `DISCARD`, and a `WATCH` that aborts.
 
 Protocol and RESP3 covers negotiated version under `protocol=3`, negotiated
-version under `protocol=2`, `server_info` contents after HELLO, `DEBUG
-PROTOCOL` for each aggregate type, a verbatim reply, and a double reply.
+version under `protocol=2`, `server_info` contents after HELLO, `DEBUG PROTOCOL`
+for map and array, a verbatim reply, and a double reply.
+
+`DEBUG PROTOCOL attrib` is excluded from the oracle entirely: redis-py raises on
+it. Attributes are verified in the chunking channel, which is now their sole
+enforcement per D11.
 
 Error mapping covers the four required codes. Each is produced by a real
 server condition, never by a synthesized error string: `WRONGTYPE` from a list
@@ -291,7 +326,9 @@ not go through the live server.
 ### 3.3 What the RESP2 half tests
 
 Sixteen of the fifty cases run against a `protocol=2` connection with a
-`protocol=2` redis-py. Their purpose is degradation fidelity: under RESP2 a
+`protocol=2` redis-py: 3 strings, 2 lists, 3 hashes covering the flat-array
+shape of `HGETALL`, 2 sets, 3 sorted sets covering scores as bulk strings
+rather than doubles, 1 keyspace, 1 transaction, and 1 negotiation. Their purpose is degradation fidelity: under RESP2 a
 hash reply is a flat list and a score is a bulk string, and an implementation
 that returns RESP3 shapes under a RESP2 connection is wrong even though the
 values are arguably better.
@@ -385,7 +422,7 @@ connections rather than handing the same one out repeatedly.
 
     borrow, release, reuse, capacity         4
     health check and eviction                3
-    poisoning: protocol, connection, timeout 3
+    poisoning: connection, timeout, post-poison 3
     concurrent utilization and distinct ids  2
     cross-talk under injected timeouts       4
     close and cleanup semantics              2
@@ -398,11 +435,13 @@ connections rather than handing the same one out repeatedly.
 The three poisoning cases each induce their failure through the public API
 rather than by mutating internals.
 
-Protocol desynchronisation is induced by issuing a command whose reply is
-consumed by a second connection sharing the same socket, which is not possible
-through the public API, so it is instead induced by feeding the connection's
-parser a malformed frame through a deliberately malformed command argument that
-the server rejects at the protocol level.
+`ProtocolError` poisoning has no public induction path and its case is
+reallocated. `execute` always emits well formed RESP, and a genuine protocol
+level rejection makes Redis close the connection, which surfaces as
+`ConnectionError` and duplicates the adjacent case. Section 7.2 forbids reaching
+into internals, which closes the remaining route. The freed case asserts instead
+that a poisoned connection raises `ConnectionError` on any further `execute`,
+per `docs/API.md` section 6.3.
 
 Connection death is induced with `CLIENT KILL` issued from a separate
 connection against the target's `CLIENT ID`.
@@ -456,7 +495,7 @@ interpreter level allocation happening to land inside the window.
     peak ratio under 4 KB chunked feed              2
     reset() releases buffered state                 1
     pipeline of 10k small replies does not grow     1
-    depth 100 nesting completes within bound        1
+    depth 100 nesting completes structurally        1
     scaling behavior under chunked feed             2
                                                    --
                                                    10
@@ -465,8 +504,14 @@ The `reset()` case asserts that after feeding a partial large frame and calling
 `reset`, traced memory returns to within 1.1 times baseline. It catches an
 implementation that never releases its buffer.
 
-The pipeline case asserts that peak growth across 10,000 small replies is
-bounded by a constant rather than by the number of replies.
+The pipeline case feeds 10,000 small replies, draining and discarding after
+each. Peak retained must not exceed 3.0 times a single reply's size plus 64 KB
+of slack. The slack absorbs interpreter level allocation; the point is that the
+bound does not scale with the reply count.
+
+The depth 100 case has no payload and therefore no meaningful ratio. It asserts
+structurally: the value parses correctly and no `RecursionError` occurs, which
+is what it was actually testing.
 
 The scaling cases are the two described in open item O1.
 
@@ -505,6 +550,10 @@ guarantees.
 No reaching into private attributes of the implementation. Every assertion goes
 through the surface in `docs/API.md`, with the sole exception of the sans-io
 structural check, which inspects module ASTs rather than runtime state.
+
+The sans-io check is a precondition and holds no case allocation, but unlike the
+probe its failure is the implementation's fault: a violation scores zero across
+all channels rather than aborting as a configuration error.
 
 ### 7.3 Flake budget
 

@@ -45,8 +45,10 @@ Equality delegates to the wrapped value:
     Attributed(b"x", {b"k": b"v"}) == b"x"        -> True
     b"x" == Attributed(b"x", {b"k": b"v"})        -> True
 
-`__hash__` delegates to the wrapped value where the value is hashable, and is
-`None` (unhashable) where it is not. `__repr__` shows both the value and the
+`__hash__` delegates to the wrapped value. Where the wrapped value is
+unhashable, `hash()` raises `TypeError`, which is observationally identical to
+`__hash__ = None`; the latter cannot be made conditional at class definition
+time. `__repr__` shows both the value and the
 attributes.
 
 Attributes never compare. Two `Attributed` instances wrapping equal values are

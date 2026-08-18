@@ -4,7 +4,7 @@ set -euo pipefail
 
 NAME="resp3-dev-redis"
 PORT="${REDIS_PORT:-6399}"
-IMAGE="redis:7.4-alpine"
+IMAGE="redis:7.4-bookworm"
 
 case "${1:-up}" in
   up)
