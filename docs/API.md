@@ -23,7 +23,14 @@ surface defined in this document, with one exception noted in section 2.
 
 `parser.py` and `protocol.py` import nothing from `socket`, `select`,
 `asyncio`, `ssl`, or `subprocess`. This is verified structurally by the sealed
-harness against the module's AST, not by convention.
+harness against the modules' ASTs, not by convention.
+
+The constraint is transitive. Whatever those two modules import must satisfy it
+too, or the separation is cosmetic. In practice this means `errors.py`, the only
+other module `parser.py` needs, must itself stay clear of the five. An
+implementation that reaches I/O through an intermediate module has not built a
+sans-io parser, and the check follows the import graph rather than stopping at
+the two named files.
 
 `__init__.py` re-exports every name in section 2. An implementer may add
 private modules but may not move or rename public ones, because the sans-io
@@ -69,6 +76,12 @@ and `address: str`.
 An unrecognised server error code raises `ServerError` itself, not a subclass.
 `ServerError` is public but is not required to be constructible by callers.
 
+This document is authority for the generic mapping. `docs/PROTOCOL.md` section 6
+lists `RedisError` as the fallback; that is superseded here. Raising the base
+class would erase the distinction between a server that answered with an error
+and a connection that failed, which is the distinction the whole hierarchy
+exists to draw.
+
 `ProtocolError` and `ConnectionError` both mean the connection is unusable.
 `ServerError` and its subclasses do not: the connection remains healthy and
 usable, because the server completed its reply normally.
@@ -106,8 +119,10 @@ not given.
     connect() -> None
     close() -> None
     is_connected -> bool
+    is_poisoned -> bool
     protocol_version -> int
     server_info -> dict
+    pushes_discarded -> int
 
 `connect` opens the socket, disables Nagle, and performs negotiation as
 described in section 5. Calling it on an already connected instance is a no-op.
@@ -199,8 +214,12 @@ password and no AUTH path is implemented.
 
 Three outcomes:
 
-A successful reply, which is a map under RESP3, sets `protocol_version` to 3
-and populates `server_info`.
+A successful reply sets `protocol_version` to 3 and populates `server_info`.
+
+Under RESP3 the reply is a `%` map and becomes `server_info` directly. Under a
+server that answers HELLO with a flat array, the client pairs consecutive
+elements into a dict. `server_info` is always a `dict`, whichever wire shape
+carried it, and its keys are `bytes` per the protocol contract.
 
 A `ServerError` reply means the server does not support HELLO or does not
 support protocol 3. This includes servers predating Redis 6, which reply with
@@ -245,6 +264,12 @@ previous connection fell back.
 available and otherwise creates one, up to `max_connections`. When the pool is
 at capacity and none are idle, it blocks until one is released or `timeout`
 elapses, at which point it raises `TimeoutError`.
+
+A `timeout` of `None` blocks indefinitely on socket operations but not on
+acquisition. `acquire` always applies a bound; where `timeout` is `None` it uses
+30 seconds. A pool that can block forever at capacity is a deadlock, not a
+configuration, and the pool channel's exhaustion cases depend on `acquire`
+returning control.
 
 An idle connection is health checked before being handed out when
 `health_check_interval` is nonzero and that many seconds have elapsed since its
@@ -327,9 +352,14 @@ Or, preferred:
 
 `push` encodes and buffers a command. It performs no I/O and never blocks.
 
-`execute` writes every buffered command in one write where the OS permits,
-then reads exactly as many replies as there were commands, and returns them as
-a list in the order the commands were queued.
+`execute` writes every buffered command before reading any reply, then reads
+exactly as many replies as there were commands and returns them as a list in
+the order the commands were queued.
+
+The requirement is the ordering, not the syscall count. Whether the commands
+leave in one `sendall` or several is unobservable and unverified; what matters
+is that no reply is read until every command is written, which is what makes a
+pipeline a pipeline rather than a loop.
 
 An empty pipeline's `execute` returns `[]` and performs no I/O.
 
