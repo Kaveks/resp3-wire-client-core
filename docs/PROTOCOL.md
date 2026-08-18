@@ -14,15 +14,19 @@ comparator in `harness/support/compare.py`, and `reference/resp3_wire/`.
 Three constraints shape every decision below.
 
 The differential oracle compares values produced by the client against values
-produced by redis-py 8.1.0 running against the same server. Any representation
-that does not compare equal to redis-py's output creates false failures, so
-equality with redis-py is a hard requirement wherever redis-py produces a
-value at all.
+produced by redis-py 8.1.0 running against the same server. Where redis-py
+produces a comparable value, the representation here must compare equal to it,
+or the oracle generates false failures.
 
-redis-py discards RESP3 attributes and the verbatim string format prefix. The
-oracle therefore cannot see either. Both are verified by sealed tests instead,
-which means the representation must carry that information without disturbing
-oracle equality.
+Measurement established three places where redis-py produces no comparable
+value, recorded as D11. It raises `InvalidResponse` on RESP3 attribute frames
+rather than discarding them, so no oracle case may carry an attribute at all.
+It returns `list` for every RESP3 set, by deliberate design, because a set may
+contain unhashable members. And it discards the verbatim string format prefix.
+
+Attributes, set-ness, and verbatim format are therefore verified by sealed tests
+rather than by the oracle. The representation below must carry that information
+without disturbing the comparisons the oracle can still make.
 
 The parser is sans-io. It never touches a socket, never blocks, and is driven
 entirely by byte chunks handed to it. This makes the chunking channel a test of
@@ -30,7 +34,7 @@ a specified public interface rather than of implementation internals.
 
 ## 2. Value types
 
-Three types are defined by this contract. Everything else is a Python builtin.
+Four types are defined by this contract. Everything else is a Python builtin.
 
 ### 2.1 Attributed
 
@@ -48,8 +52,7 @@ Equality delegates to the wrapped value:
 `__hash__` delegates to the wrapped value. Where the wrapped value is
 unhashable, `hash()` raises `TypeError`, which is observationally identical to
 `__hash__ = None`; the latter cannot be made conditional at class definition
-time. `__repr__` shows both the value and the
-attributes.
+time. `__repr__` shows both the value and the attributes.
 
 Attributes never compare. Two `Attributed` instances wrapping equal values are
 equal regardless of their attribute dictionaries. This is deliberate: it is
@@ -362,8 +365,12 @@ repeatedly copies a growing buffer with slicing.
 
 ## 10. Open items
 
-These are unresolved and block the sections they touch. Each needs a
-maintainer decision before `spec/instruction.md` is written.
+None.
 
-None. O1 and O2 were resolved on 2026-08-18 and are folded into sections 2.4,
-4.7, and 4.8. O3 is resolved in `docs/API.md` section 4.4.
+This document's O1 (push messages) and O2 (blob errors) were resolved on
+2026-08-18 and folded into sections 2.4, 4.7, and 4.8. Its O3 (whether the
+client unwraps `Attributed` before returning) was resolved as pass-through in
+`docs/API.md` section 4.4.
+
+Note that `docs/HARNESS.md` numbers its own open items independently; its O1
+through O3 are unrelated to these.
