@@ -20,7 +20,7 @@ behavior; this document defines how correctness is observed.
       support/
         redis_boot.py        server lifecycle
         compare.py           the comparator
-        probe.py             redis-py behavior measurement (see 2.6)
+        probe.py             redis-py behavior measurement (see 2.8)
 
 Every case is a separate pytest test function. Each is independently
 meaningful and independently failable. No case asserts more than one property,
@@ -107,8 +107,6 @@ excluded from the oracle command matrix entirely; the comparator raises
 `Divergence` on encountering a nan on either side, on the grounds that its
 presence means the matrix is wrong.
 
-`ERROR` compares `code` and `message` as strings.
-
 `EXC` and `ERROR` are mutually comparable and normalize to a common form
 before comparison, per D11. Each side yields a code: for an `ErrorReply` it is
 `.code`; for a `resp3_wire` exception it is `.code`; for a redis-py exception it
@@ -172,9 +170,10 @@ the attribute dictionary against the current path in a side channel. Unwrapping
 is recursive in the sense that it is applied at every level of descent, not
 just at the root.
 
-The recorded attributes are not compared against anything. They exist so that
-oracle cases can additionally assert that attributes appeared where expected,
-and so that a case can assert that no attribute leaked into a value position.
+The recorded attributes are not compared against anything. No oracle case may produce an attributed reply, since redis-py raises on `|`
+frames per D11, so the side channel is unused by the oracle in practice. It
+exists because the sealed chunking cases reuse the comparator, and because a
+case can assert that no attribute leaked into a value position.
 
 The one thing the comparator enforces about attributes is that an attribute
 dictionary never appears as a standalone value. An `actual` that is a bare
@@ -236,7 +235,7 @@ The probe is 9 assertions and does not count toward any channel's case
 allocation.
 
 `DEBUG PROTOCOL` is gated in Redis 7 by the `enable-debug-command`
-configuration. See open item O3.
+configuration, which every server invocation passes per D10.
 
 ## 3. Channel 1: differential oracle, 50 cases
 
@@ -479,8 +478,7 @@ was discarded rather than quietly reused.
 
 ## 6. Channel 4: resource behavior, 10 cases
 
-This is the weakest of the four channels and is weighted accordingly. Section
-9's open item O1 concerns it directly.
+This is the weakest of the four channels and is weighted accordingly.
 
 ### 6.1 What is measured
 
@@ -489,12 +487,19 @@ bytes once parsed. The requirement is bounded overhead.
 
 Primary metric, peak retained overhead:
 
+    payload_frame = build_frame(payload_size)   # BEFORE tracing starts
+    gc.collect()
     tracemalloc.start()
     baseline = tracemalloc.get_traced_memory()[0]
     parser.feed(payload_frame)
     value = parser.gets()
     peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
     ratio = (peak - baseline) / payload_size
+
+The frame is built before tracing begins. If it were built inside the traced
+region the input alone would consume 1.0 of the 3.0 budget, silently tightening
+the bound to 2.0 and leaving a correct implementation with no headroom.
 
 `ratio` must not exceed 3.0.
 
@@ -572,8 +577,9 @@ never purely luck.
 
 No `time.sleep` as synchronization. Use `threading.Barrier` and `Event`.
 
-No wall clock threshold as a correctness assertion, with the single exception
-under open item O1.
+No absolute wall clock threshold as a correctness assertion. Relative scaling
+ratios are permitted under D14, and only under D14; the two channel 4 scaling
+cases are their sole sanctioned use.
 
 No assertion on the ordering of concurrent operations beyond what the contract
 guarantees.
@@ -616,7 +622,9 @@ assumes a server already exists and never uses the default port.
 None. O1, O2, and O3 were resolved and ratified on 2026-08-18.
 
 O1: relative time ratios are permitted as a narrow exception to the timing
-rule, for detecting quadratic buffer churn in channel 4. See D9.
+rule, for detecting quadratic buffer churn in channel 4. D9 ratified this;
+D14 superseded its formulation after measurement showed the two-point ratio
+reads allocator state rather than complexity class.
 
 O2: probe assumptions verified against redis-py 8.1.0. Section 2.8 stands.
 
