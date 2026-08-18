@@ -85,3 +85,36 @@ bookworm-based image rather than alpine, for libc parity.
 Ratified 2026-08-18. Resolves A10.
 `Connection` takes no username or password. The AUTH clause in API.md section 5
 is struck. No dead code path is implemented for an unreachable feature.
+
+## D14. D9's two-point ratio is superseded by per-byte cost growth
+Ratified 2026-08-18. Supersedes D9's formulation, not its intent.
+
+D9 authorized `T(8MB)/T(1MB) < 16.0` as the complexity discriminator.
+Measurement against the reference parser showed the metric is not stable enough
+to carry a threshold. Two defensible readings of "minimum of 5 trials" produce
+9.6 and 17.9 against the same linear parser, with the 16.0 bound between them.
+
+The mechanism: interleaved paired trials couple the measurements through
+allocator state. A 1 MB run executed immediately after an 8 MB run inherits a
+freshly freed large arena and completes roughly twice as fast, and the ratio
+inherits that noise directly. The metric is reading the allocator, not the
+algorithm.
+
+The replacement measures per-byte cost across a wider size range:
+
+    for size in (1 MB, 8 MB, 64 MB):
+        t[size] = min over 5 trials of the chunked feed-and-drain time
+        per_byte[size] = t[size] / size
+
+    assert per_byte[64MB] / per_byte[1MB] < 8.0
+
+A linear parser holds per-byte cost roughly constant; the reference measures
+1.8x across the 64x range. A quadratic parser's per-byte cost grows with size
+directly, giving a ratio near 64. The bound of 8.0 sits an order of magnitude
+from both.
+
+This is a stronger discriminator than the two-point ratio for two reasons: three
+points establish a trend where two establish only a difference, and the wider
+range separates the classes by a factor that no allocator artifact can bridge.
+It remains a relative comparison, so D9's constraint holds unchanged: absolute
+wall clock assertions are still prohibited.

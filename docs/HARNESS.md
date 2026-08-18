@@ -535,7 +535,16 @@ The depth 100 case has no payload and therefore no meaningful ratio. It asserts
 structurally: the value parses correctly and no `RecursionError` occurs, which
 is what it was actually testing.
 
-The scaling cases are the two described in open item O1.
+The two scaling cases implement D14. The first measures per-byte cost at 1 MB,
+8 MB, and 64 MB under a fixed chunk size, taking the minimum of 5 trials at each
+size independently, and asserts that per-byte cost at 64 MB is under 8.0 times
+per-byte cost at 1 MB. The second asserts monotonicity is not required but that
+no single step in the sequence exceeds 4.0, which catches a parser that is
+linear across the small sizes and degrades only at scale.
+
+Sizes are measured independently, never interleaved. D14 records why: paired
+interleaved trials couple through allocator state and the resulting ratio reads
+the allocator rather than the algorithm.
 
 ## 7. Determinism and seeds
 
