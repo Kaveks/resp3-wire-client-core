@@ -138,6 +138,12 @@ raises. A closed connection may be reconnected by calling `connect` again.
 negotiation fell back to RESP2 without a usable HELLO reply. Keys are `bytes`
 per the protocol contract.
 
+Reading it before `connect` returns an empty dict rather than raising, unlike
+`protocol_version`. The asymmetry is deliberate: a version of 2 or 3 has no
+truthful value before negotiation, so returning one would be a lie, whereas an
+empty `server_info` is exactly what an unnegotiated connection knows about its
+server.
+
 `Connection` supports the context manager protocol, closing on exit.
 
 ### 4.2 Command execution
@@ -151,6 +157,11 @@ Argument encoding: `bytes` pass through, `str` encodes as UTF-8, `int` and
 `float` encode via `repr`. Any other type raises `TypeError`. A `bool` raises
 `TypeError` rather than encoding as an integer, because silently sending `True`
 as `1` hides bugs.
+
+`execute()` with no arguments raises `ValueError` and writes nothing. Redis 7.4
+sends no reply at all to an empty command array, so writing one blocks until the
+socket timeout and then poisons the connection. Failing at the call site turns a
+hang into an immediate, diagnosable error.
 
 The return value is the parsed reply per `docs/PROTOCOL.md`, with one
 transformation: a top level `ErrorReply` is converted to the corresponding

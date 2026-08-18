@@ -272,6 +272,14 @@ reply. `bytes` pass through, `str` encodes UTF-8, `int` and `float` encode via
 `repr`, `bool` raises `TypeError` rather than encoding as an integer, anything
 else raises `TypeError`.
 
+`execute()` with no arguments raises `ValueError` and writes nothing. Redis
+sends no reply to an empty command array, so writing one would block until the
+socket timeout rather than fail.
+
+`server_info` before `connect` returns an empty dict rather than raising. Only
+`protocol_version` raises `RuntimeError`, because a version has no truthful
+value before negotiation while an empty `server_info` is accurate.
+
 A top level `ErrorReply` in the reply is converted to the matching exception and
 raised. A nested one is returned as a value. This asymmetry is required: `EXEC`
 returns an array in which individual commands may have failed, and raising on
