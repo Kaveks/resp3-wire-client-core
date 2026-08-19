@@ -19,6 +19,7 @@ import gc
 import sys
 import time
 import tracemalloc
+from typing import Any
 
 import pytest
 
@@ -86,14 +87,31 @@ def peak_ratio(payload_size: int, chunked: bool = False, trials: int = TRIALS) -
 
 
 def elapsed_chunked(payload_size: int, chunk: int = CHUNK) -> float:
-    """Wall time to feed one frame in fixed chunks and drain it."""
+    """Wall time to feed one frame in fixed chunks and drain it.
+
+    D24. The drain must produce a value. Timing a parser that returns nothing
+    measures nothing, and the D14 assertions were satisfied by exactly that
+    until this function checked.
+    """
     frame = build_frame(payload_size)
     parser = RespParser()
+    value: Any = NEED_MORE
     start = time.perf_counter()
     for i in range(0, len(frame), chunk):
         parser.feed(frame[i:i + chunk])
-        parser.gets()
-    return time.perf_counter() - start
+        result = parser.gets()
+        if result is not NEED_MORE:
+            value = result
+    elapsed = time.perf_counter() - start
+    assert value is not NEED_MORE, (
+        f"a complete {payload_size} byte frame was fed in {chunk} byte chunks "
+        f"and the parser never produced a value; there is no parsing cost to "
+        f"measure"
+    )
+    assert len(value) == payload_size, (
+        f"the parsed value is {len(value)} bytes, expected {payload_size}"
+    )
+    return elapsed
 
 
 def per_byte_cost(payload_size: int, trials: int = 5,

@@ -77,6 +77,19 @@ def parse_partitioned(data: bytes, cuts) -> list:
 
 def assert_invariant(data: bytes, cuts, note: str = "") -> None:
     reference = [strict_describe(v) for v in parse_whole(data)]
+    # D24. The comparison below is self-referential, so it cannot detect the
+    # absence of output: an empty observed sequence matches an empty reference
+    # exactly. A parser returning nothing satisfied thirteen of these cases
+    # until this line existed. Every frame fed here is a complete reply by
+    # construction, so an empty reference means the parser produced nothing,
+    # not that there was nothing to produce.
+    if not reference:
+        raise AssertionError(
+            f"the whole-buffer feed produced no values at all{note}; "
+            f"{len(data)} bytes of complete frames went in and nothing came "
+            f"out, so there is no reference to compare a partitioned feed "
+            f"against"
+        )
     observed = [strict_describe(v) for v in parse_partitioned(data, cuts)]
     if observed != reference:
         raise AssertionError(

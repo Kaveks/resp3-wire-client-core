@@ -48,6 +48,7 @@ TOTAL_CASES = sum(CHANNELS.values())
 # Aborting configuration errors, distinguished from a low score.
 EXIT_PROBE_MISMATCH = 4
 EXIT_ISOLATION = 3
+EXIT_WRONG_CLIENT = 5
 
 
 def parse_junit(path: Path) -> dict[str, dict[str, int]]:
@@ -123,26 +124,41 @@ def main() -> int:
     env["PYTHONPATH"] = os.pathsep.join(
         [str(client_dir), str(HARNESS_DIR)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
     )
+    # `python -m pytest` prepends the working directory to sys.path, ahead of
+    # everything in PYTHONPATH. A `resp3_wire` sitting in the working directory
+    # therefore shadows the one named by --client, and the run grades a package
+    # nobody asked for. PYTHONSAFEPATH stops the prepend outright.
+    env["PYTHONSAFEPATH"] = "1"
+    # Which package was asked for, so the session can assert it is the one that
+    # actually got imported rather than trusting the path arithmetic above.
+    env["RESP3_CLIENT_PATH"] = str(client_dir)
     if "RESP3_SEED" not in env:
         env["RESP3_SEED"] = str(int.from_bytes(os.urandom(4), "big"))
     print(f"RESP3_SEED={env['RESP3_SEED']}", flush=True)
 
     completed = subprocess.run(
+        # -p no:cacheprovider: the image mounts the harness read-only, and
+        # pytest's cache lives beside the ini file. Writing it is not part of
+        # what this measures, and failing to write it should not be either.
         [sys.executable, "-m", "pytest", str(HARNESS_DIR / "channels"),
-         "-q", "--junitxml", str(junit_path), *args.pytest_args],
+         "-q", "-p", "no:cacheprovider",
+         "--junitxml", str(junit_path), *args.pytest_args],
         env=env,
     )
 
     # An aborting gate exits with its own code and must not read as a score.
-    if completed.returncode in (EXIT_ISOLATION, EXIT_PROBE_MISMATCH):
+    if completed.returncode in (EXIT_ISOLATION, EXIT_PROBE_MISMATCH, EXIT_WRONG_CLIENT):
+        reasons = {
+            EXIT_PROBE_MISMATCH: "redis-py behaviour does not match the harness contract",
+            EXIT_ISOLATION: "redis-py is reachable from the interpreter under test",
+            EXIT_WRONG_CLIENT: (
+                f"the package that was imported is not the one under {client_dir}"
+            ),
+        }
         emit({
             "score": None, "passed": 0, "total": TOTAL_CASES,
             "aborted": True,
-            "reason": (
-                "redis-py behaviour does not match the harness contract"
-                if completed.returncode == EXIT_PROBE_MISMATCH
-                else "redis-py is reachable from the interpreter under test"
-            ),
+            "reason": reasons[completed.returncode],
             "seed": env["RESP3_SEED"],
         })
         return completed.returncode
