@@ -365,3 +365,51 @@ Every assertion added from here is validated by breaking the property it tests
 and observing the failure. This applies to harness cases, image checks, and
 tooling equally. The cost is one deliberate breakage per assertion; the
 alternative is a verifier whose green is uninformative.
+
+## D27. The graded package must be asserted, not assumed
+
+Ratified 2026-08-19.
+
+`python -m pytest` prepends the working directory to `sys.path`, ahead of
+everything in `PYTHONPATH`. The image's `WORKDIR` is `/app`, which holds the
+starter, so a harness invoked there imported the starter's `resp3_wire`
+regardless of what `--client` named. The reference scored 0/130 inside the image
+while reporting that it was grading the reference.
+
+This never surfaced on the host because the repository root has no top-level
+`resp3_wire`. Every host score was correct by accident of working directory.
+
+The consequence had it shipped: the platform's oracle stage runs the reference
+solution and would have scored it zero, rejecting the task as unsolvable by its
+own reference with nothing in the output explaining why.
+
+Two controls, prevention and detection:
+
+`harness/run.py` sets `PYTHONSAFEPATH=1` for the pytest subprocess, which stops
+the prepend, and passes `RESP3_CLIENT_PATH`.
+
+`harness/conftest.py` asserts that the imported `resp3_wire.__file__` resolves
+under that directory and aborts with exit code 5 otherwise. The assertion was
+observed failing, with `PYTHONSAFEPATH` deliberately withheld, before being
+trusted.
+
+The general form: a harness that can be pointed at an implementation must prove
+it graded the one it was pointed at. Naming it is not proving it.
+
+## D28. A negative control tests the claim, not the apparatus
+
+Ratified 2026-08-19.
+
+Four image checks were found passing without executing, because `docker run`
+discards stdin without `-i`. The fix was to write the probes as files and
+execute them by path, and to run a negative control for each before the check
+itself, per D26.
+
+Writing those controls exposed a fifth gap. "pytest-timeout is installed" is not
+the claim `docs/HARNESS.md` section 8 makes; the claim is that a case exceeding
+30 seconds is killed. The control now runs a 45-second case and observes it
+terminated at 30.9 seconds.
+
+The distinction generalises. A control that verifies the mechanism is present is
+weaker than one that verifies the mechanism acts. Where both are available, the
+second is the control.
