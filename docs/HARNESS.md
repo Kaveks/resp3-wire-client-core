@@ -108,9 +108,19 @@ excluded from the oracle command matrix entirely; the comparator raises
 presence means the matrix is wrong.
 
 `EXC` and `ERROR` are mutually comparable and normalize to a common form
-before comparison, per D11. Each side yields a code: for an `ErrorReply` it is
-`.code`; for a `resp3_wire` exception it is `.code`; for a redis-py exception it
-is the first whitespace delimited token of `str(exc)`, uppercased. Only codes
+before comparison, per D11. Each side yields a code. For an `ErrorReply` or a `resp3_wire` exception it is
+`.code`.
+
+For a redis-py exception it is recovered from redis-py's own `EXCEPTION_CLASSES`
+table by exception class, falling back to the first whitespace delimited token of
+`str(exc)` only when the class is a plain `ResponseError`.
+
+This document previously specified the message-token rule alone. Measurement
+showed it wrong for two of the five error cases: redis-py's `parse_error` strips
+the code prefix from the message for every code in its table and leaves it for
+codes it does not know, so `WRONGTYPE` and `BUSYGROUP` keep their prefix while a
+generic `ERR` becomes `WRONG` and `NOSCRIPT` becomes `NO`. The class lookup is
+authoritative where it applies; the message token is the fallback, not the rule. Only codes
 compare. Message text and exception class do not, because redis-py's classes
 live in another package and its nested `EXEC` errors are exception instances
 where this contract requires `ErrorReply`.
@@ -271,7 +281,7 @@ global flush.
                            50
 
 The four type-identity cases introduced by D11 are drawn from this 50, not
-added to it. `MOVED` parsing and the three identity assertions sit inside error
+added to it. `MOVED` parsing is one of them; the other three sit inside error
 mapping and transactions; the `type(result) is set` assertion is the `SMEMBERS`
 case. The suite totals exactly 100 across all channels and the 50/20/20/10
 weighting holds.
@@ -332,8 +342,11 @@ version under `protocol=2`; `server_info` contents after HELLO; `DEBUG PROTOCOL`
 for map and for array, one case covering both; a verbatim reply carrying the
 `VerbatimBytes.format` assertion.
 
-A double reply is covered by `ZSCORE` in sorted sets and is not duplicated
-here.
+A double reply is compared incidentally: `ZSCORE` is designated RESP2 per section
+3.3, where a score arrives as a bulk string, so the RESP3 `,` frame is reached
+through the `ZADD GT` case rather than by a dedicated one. This is deliberate
+given the fixed allocation, but it means double parsing carries less oracle
+weight than the other RESP3 scalars.
 
 `DEBUG PROTOCOL attrib` is excluded from the oracle entirely: redis-py raises on
 it. Attributes are verified in the chunking channel, which is now their sole

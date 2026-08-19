@@ -174,3 +174,39 @@ rather than by reasoning, and is the reason the flake budget exists.
 reading any reply cannot be expressed through `execute`, which couples one write
 to one read. The seam is internal and unspecified; only the observable behavior
 in `docs/API.md` section 7 is contractual.
+
+## D17. Error codes recover from redis-py's exception class, not its message
+
+Ratified 2026-08-18. Corrects HARNESS.md 2.4.
+
+Measurement established that redis-py's `parse_error` strips the code prefix
+from the message for every code in its `EXCEPTION_CLASSES` table and leaves it
+intact for codes it does not recognise. The previously documented rule, taking
+the first whitespace delimited token of the message, therefore yields `WRONG`
+for a generic `ERR` and `NO` for `NOSCRIPT`, failing three error cases against
+a correct client.
+
+The code is recovered from the exception class where redis-py has one, and from
+the message token only for a plain `ResponseError`.
+
+This is the same class of finding as D11: a factually wrong claim about an
+external library, corrected by measurement. Applying it immediately rather than
+proposing it is correct, because `CLAUDE.md`'s proposal requirement governs
+loosening a channel, and this loosened nothing. Three cases that were failing a
+correct reference now pass.
+
+## D18. The oracle runs redis-py in a separate process
+
+Ratified 2026-08-18.
+
+`CLAUDE.md` requires redis-py to be absent from the interpreter that imports the
+client package. The development virtualenv holds both pytest and redis-py, so a
+harness running in-process would place redis-py directly on that path, which is
+the exploit the contract names as needing a structural defence rather than a
+static check.
+
+The oracle therefore executes redis-py under a separate interpreter named by
+`RESP3_ORACLE_PYTHON`, returning expected values as tagged JSON that is rebuilt
+into real Python values before comparison. The comparator sees actual values,
+not a parallel representation. Session start asserts the separation and aborts
+if the client interpreter can import redis-py.
