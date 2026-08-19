@@ -458,3 +458,37 @@ platform documentation names `cpus`, `memory_mb`, `storage_mb`, and `gpus`;
 `docs/SUBMISSION.md` uses the draft form's camelCase. The TOML uses the
 documented snake_case, and the derivation from SUBMISSION.md maps between them
 rather than copying spelling.
+
+## D31. The apparatus is not exempt
+
+Ratified 2026-08-19.
+
+Four times now a check has passed without testing its property: a division by a
+baseline that was always zero, a comparison a parser producing nothing
+satisfied, probes fed on a stdin that `docker run` discarded, and a shell
+`local` declaration resetting `$?` so an exit status read the declaration rather
+than the command.
+
+The last is the instructive one. It sat in the script written to verify the
+bundle, after D26 had been ratified specifically to prevent this, and it
+produced two failures on one line: a spurious failure that was investigated
+because it was loud, and a vacuous pass that was found only because the
+investigation happened to pass through it.
+
+D26 applies to tooling, image checks, and shell scripts exactly as it applies to
+harness cases. A verification script is a check, and an unverified verification
+script is worse than none, because its green is trusted.
+
+## D32. Derived values are asserted by their derivation
+
+Ratified 2026-08-19.
+
+`docs/SUBMISSION.md` declares `cpuMillis: 4000`. The platform's `task.toml` key
+is `cpus`, a count, so the correct value is 4. Writing 4000 there requests 4000
+CPUs against an 8-CPU ceiling, which is a deterministic rejection, and it looks
+correct to any check comparing the two numbers for equality.
+
+`tools/check_paths.py` asserts the conversion including its factor of 1000
+rather than asserting the figure. The same applies to every value the bundle
+derives from a contract: the check is of the mapping, not of the result, because
+a result can agree with its source and still be wrong.
