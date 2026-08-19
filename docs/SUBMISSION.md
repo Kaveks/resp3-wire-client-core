@@ -31,7 +31,7 @@ All figures sit well under the 8 CPU / 65536 MB / 40960 MB ceiling, and
 Score emission. The Harbor format's mechanism for a continuous score from
 `tests/test.sh` is not yet verified. `run.py` will emit both a pytest exit code
 and a JSON score file until this is confirmed. Channel weights are realized
-through case counts (50/20/20/10 of 100), which degrades correctly under either
+through case counts (65/26/26/13 of 130, the 50/20/20/10 ratios scaled per D19), which degrades correctly under either
 mechanism.
 
 ## Prose fields

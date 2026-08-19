@@ -267,3 +267,82 @@ poisoning has no public induction path, already recorded in section 5.4.
 Pipeline batching produces byte-identical results to a write-read loop, and
 `docs/API.md` section 7.1 states that the syscall count is unobservable and
 unverified.
+
+## D22. Blob errors are unreachable from the pinned server
+
+Ratified 2026-08-19.
+
+`DEBUG PROTOCOL err` does not exist in Redis 7.4.10. The command rejects it and
+lists the valid names, none of which emit a `!` frame. No live-server oracle
+case can therefore carry a blob error, and the RESP3 scalar coverage group
+substitutes `double`.
+
+Blob error handling remains enforced, by the chunking absolute-expectation case
+asserting that a payload containing CRLF survives intact. That is the property
+that distinguishes `!` from `-` in the first place, so nothing meaningful moved.
+
+## D23. The third scaling case varies chunk size, not payload size
+
+Ratified 2026-08-19.
+
+D14's two cases fix the chunk size at 4 KB and vary payload size. A parser whose
+cost grows with the number of feed calls rather than with total bytes is eight
+times less visible to them than to a 512-byte measurement. The third case
+repeats the D14 metric at 512 bytes, same form and same 8.0 bound, so it
+introduces no new use of the D9/D14 timing exception. The reference measures
+1.20x.
+
+## D24. Self-referential cases must assert their reference is non-empty
+
+Ratified 2026-08-19.
+
+The attack suite established that a parser producing nothing satisfies thirteen
+chunking invariance cases exactly, because those cases compare a partitioned
+feed against a whole-buffer feed of the same parser. Three resource cases have
+the same shape: the scaling measurement calls `gets()` and discards the result,
+so the D14 assertions pass without a value ever coming back.
+
+An exploit does not need to know the expected answer to use this. It needs only
+to know which case is running, which `PYTEST_CURRENT_TEST` supplies, and to
+return nothing there while parsing normally elsewhere. That reached 120 of 130.
+
+Two assertions are tightened, not added, so the 65/26/26/13 allocation is
+unchanged:
+
+    chunking.py::assert_invariant   the whole-buffer reference must be non-empty
+                                    before it is compared against
+    resource.py::elapsed_chunked    the drain must produce a value
+
+D20 established that the invariant cannot detect a defect consistent across
+split schedules. This is the sharper form of the same limit: the invariant
+cannot detect the absence of output at all, because absence is consistent with
+itself. Every self-referential comparison in this harness must assert that its
+reference side is meaningful before comparing.
+
+## D25. redis-py must be unreachable, not merely unimported
+
+Ratified 2026-08-19.
+
+`CLAUDE.md` names interpreter separation as the primary structural control
+against wrapping redis-py, with the AST check as a secondary layer. The attack
+suite established that the separation as built is neither structural nor a wall.
+redis-py sits on the same filesystem one glob away, `sys.path` is writable, and
+the isolation assertion fires once at session start. An injection deferred until
+the first `connect()` runs after the assertion has passed and is never
+rechecked. That reached 71 of 130 with a parser raising on every call, caught
+only by the static check the contract says must not be the control.
+
+Three controls, all required, none sufficient alone:
+
+The image runs the harness as an unprivileged user who cannot read the oracle
+interpreter's `site-packages`. The glob then finds nothing and the import fails
+wherever it is attempted. This is the structural control and it belongs to the
+Dockerfile.
+
+`harness/conftest.py` re-asserts isolation after every case rather than once at
+session start. A one-shot check is a check an attacker waits out.
+
+The AST check remains, unchanged, as the third layer.
+
+The oracle subprocess is unaffected: it runs as a different user with its own
+interpreter, which is the arrangement D18 already describes.

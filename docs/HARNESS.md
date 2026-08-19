@@ -252,7 +252,7 @@ allocation.
 `DEBUG PROTOCOL` is gated in Redis 7 by the `enable-debug-command`
 configuration, which every server invocation passes per D10.
 
-## 3. Channel 1: differential oracle, 50 cases
+## 3. Channel 1: differential oracle, 65 cases
 
 ### 3.1 Method
 
@@ -288,11 +288,11 @@ global flush.
                            --
                            65
 
-The four type-identity cases introduced by D11 are drawn from this 50, not
+The four type-identity cases introduced by D11 are drawn from this 65, not
 added to it. `MOVED` parsing is one of them; the other three sit inside error
 mapping and transactions; the `type(result) is set` assertion is the `SMEMBERS`
-case. The suite totals exactly 100 across all channels and the 50/20/20/10
-weighting holds.
+case. The suite totals exactly 130 across all channels and the 50/20/20/10 ratios
+hold at 65/26/26/13 per D19.
 
 Each enumeration below lists exactly as many items as its allocation. A case
 that runs under both protocols counts once here and is designated in section
@@ -365,7 +365,12 @@ Error mapping, 6: the four required codes, `MOVED`, and a case asserting that
 The mutation suite found both asserted in one case, which section 1 forbids.
 
 RESP3 scalar coverage, 7: `DEBUG PROTOCOL` for `true`, `false`, `bignum`,
-`err` (blob error), `push`, plus a null-array reply and a null-bulk reply. The
+`double`, `push`, plus a null-array reply and a null-bulk reply.
+
+`DEBUG PROTOCOL err` does not exist in Redis 7.4.10; the server rejects it and
+lists the valid names, none of which emit a `!` frame. Blob errors are covered
+by the chunking absolute-expectation case instead, which asserts a CRLF-bearing
+payload survives intact. The
 oracle matrix previously reached none of these wire types, so the bool-before-int
 ordering that section 2.1 names as the comparator's headline justification was
 exercised by nothing.
@@ -395,7 +400,7 @@ not go through the live server.
 
 ### 3.3 What the RESP2 half tests
 
-Sixteen of the fifty cases run against a `protocol=2` connection with a
+Sixteen of the sixty-five cases run against a `protocol=2` connection with a
 `protocol=2` redis-py. They are drawn from the fifty, not added to them.
 
 Their purpose is degradation fidelity: under RESP2 a hash reply is a flat array
@@ -430,7 +435,7 @@ Keyspace has no RESP2 designation. `TYPE`, `TTL`, `EXPIRETIME`, and
 `OBJECT ENCODING` return identical shapes under both protocols, so designating
 one would consume a case without testing degradation.
 
-## 4. Channel 2: chunking, 20 cases
+## 4. Channel 2: chunking, 26 cases
 
 ### 4.1 The invariant, and its limit
 
@@ -522,7 +527,7 @@ This is separated out because the property is load-bearing for callers and
 because a failure here should read as what it is rather than as an unrelated
 set comparison failure elsewhere.
 
-## 5. Channel 3: pool integrity, 20 cases
+## 5. Channel 3: pool integrity, 26 cases
 
 ### 5.1 Method
 
@@ -601,7 +606,7 @@ connection on release, or whose health check discards every connection it checks
 otherwise passes every other case in this channel because the replacement works
 too.
 
-## 6. Channel 4: resource behavior, 10 cases
+## 6. Channel 4: resource behavior, 13 cases
 
 This is the weakest of the four channels and is weighted accordingly.
 
@@ -681,12 +686,16 @@ since CPython's default limit is 1000. The mutation suite confirmed a recursive
 parser passing at 100 and raising `RecursionError` at 2000. The second case is
 what tests the property; the first tests the value.
 
-The two scaling cases implement D14. The first measures per-byte cost at 1 MB,
+The three scaling cases implement D14. The first measures per-byte cost at 1 MB,
 8 MB, and 64 MB under a fixed chunk size, taking the minimum of 5 trials at each
 size independently, and asserts that per-byte cost at 64 MB is under 8.0 times
 per-byte cost at 1 MB. The second asserts monotonicity is not required but that
 no single step in the sequence exceeds 4.0, which catches a parser that is
 linear across the small sizes and degrades only at scale.
+
+The third repeats the first at a 512-byte chunk size. The first two fix the chunk
+size, so a parser linear in total bytes but growing with chunk count is eight
+times less visible to them. The reference measures 1.20x at 512 bytes.
 
 Sizes are measured independently, never interleaved. D14 records why: paired
 interleaved trials couple through allocator state and the resulting ratio reads
