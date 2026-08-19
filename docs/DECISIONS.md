@@ -210,3 +210,60 @@ The oracle therefore executes redis-py under a separate interpreter named by
 into real Python values before comparison. The comparator sees actual values,
 not a parallel representation. Session start asserts the separation and aborts
 if the client interpreter can import redis-py.
+
+## D19. The suite scales to 130 cases
+
+Ratified 2026-08-19. Supersedes the fixed 100-case allocation.
+
+The mutation suite established that sixteen of fifty-two mutations changed
+observable behavior and failed no case, and that fourteen of those were genuine
+coverage gaps rather than acknowledged limits. Attribute handling, which D11
+made this harness's sole enforcement of the task's primary novelty claim, rested
+on one case out of a hundred checking a `repr()` substring.
+
+The 100-case ceiling was a means to the 50/20/20/10 weighting, not an end. The
+suite scales to 130 (65, 26, 26, 13), which is the same ratios multiplied by
+1.3. Every existing case survives; thirty slots open for the gaps.
+
+The cost is real and accepted: the twenty-clean-run acceptance and the 100/0
+score anchors are both invalidated and must be re-established at 130/0.
+
+The alternative, holding at 100 by cutting enumerated cases, was rejected. A
+verifier that misses fourteen properties its own contracts require is the
+failure a reviewer is most likely to find, and it is the "weak, one-shot
+verifier" the platform names as the commonest reason a working task is not
+keepable.
+
+## D20. The chunking invariant is necessary but not sufficient
+
+Ratified 2026-08-19.
+
+The invariant compares a parser against itself and cannot detect a defect
+consistent across split schedules. Seven mutations confirmed this: rendering
+`*-1` as `[]`, truncating a blob error at an embedded CRLF, returning `1` for
+`#t`, parsing a push frame as a list, parking attributes at the wrong depth,
+failing to merge consecutive attributes, and returning big numbers as bytes all
+satisfied every invariance case while the corpus contained the exact frames.
+
+The channel gains eight absolute-expectation cases asserting what frames parse
+to, written from `docs/PROTOCOL.md` with no parser on the other side. The
+invariance cases keep their purpose, which is fragmentation robustness; they
+were never the right instrument for value correctness and are no longer asked to
+be.
+
+## D21. Coverage gaps found by mutation are closed, not accepted
+
+Ratified 2026-08-19.
+
+Four cases passed for reasons unrelated to what they assert, and are corrected
+rather than documented: the `reset()` case could not fail because its baseline
+was always zero; the post-poison case observed a socket timeout rather than a
+client refusal because the server was still stalled; the depth case sat below
+CPython's recursion limit; and the health-check case passed when the check
+discarded every connection, because the replacement worked.
+
+Two gaps are accepted as genuine limits and remain uncovered. `ProtocolError`
+poisoning has no public induction path, already recorded in section 5.4.
+Pipeline batching produces byte-identical results to a write-read loop, and
+`docs/API.md` section 7.1 states that the syscall count is unobservable and
+unverified.

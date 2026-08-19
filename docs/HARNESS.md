@@ -13,10 +13,10 @@ behavior; this document defines how correctness is observed.
     harness/
       run.py                 orchestrator, emits the score
       channels/
-        oracle.py            50 cases  differential comparison against redis-py
-        chunking.py          20 cases  parser invariance under fragmentation
-        pool.py              20 cases  pool integrity under concurrency
-        resource.py          10 cases  parser memory behavior
+        oracle.py            65 cases  differential comparison against redis-py
+        chunking.py          26 cases  parser correctness and invariance
+        pool.py              26 cases  pool integrity under concurrency
+        resource.py          13 cases  parser memory behavior
       support/
         redis_boot.py        server lifecycle
         compare.py           the comparator
@@ -29,6 +29,11 @@ and no filler cases exist to reach a count.
 Weights are realized through case counts rather than a weight table, so the
 50/20/20/10 split holds under a harness that scores as fraction of tests
 passed and remains sensible under one that scores pass/fail.
+
+The suite totals 130 cases: 65, 26, 26, 13. Those are the same ratios as
+50/20/20/10 scaled by 1.3. The scaling is recorded as D19 and exists because
+the mutation suite established that thirty properties these contracts require
+were enforced by no case at 100.
 
 ## 2. The comparator
 
@@ -274,11 +279,14 @@ global flush.
     sets                    5
     sorted sets             6
     keyspace and generic    5
-    transactions            4
+    transactions            5
     protocol and RESP3      5
-    error mapping           5
+    error mapping           6
+    RESP3 scalar coverage   7
+    negotiation paths       3
+    pipeline behavior       3
                            --
-                           50
+                           65
 
 The four type-identity cases introduced by D11 are drawn from this 50, not
 added to it. `MOVED` parsing is one of them; the other three sit inside error
@@ -352,7 +360,31 @@ weight than the other RESP3 scalars.
 it. Attributes are verified in the chunking channel, which is now their sole
 enforcement per D11.
 
-Error mapping, 5: the four required codes plus `MOVED`. Each is produced by a real
+Error mapping, 6: the four required codes, `MOVED`, and a case asserting that
+`MovedError.slot` and `.address` parse correctly, separate from the mapping case.
+The mutation suite found both asserted in one case, which section 1 forbids.
+
+RESP3 scalar coverage, 7: `DEBUG PROTOCOL` for `true`, `false`, `bignum`,
+`err` (blob error), `push`, plus a null-array reply and a null-bulk reply. The
+oracle matrix previously reached none of these wire types, so the bool-before-int
+ordering that section 2.1 names as the comparator's headline justification was
+exercised by nothing.
+
+Negotiation paths, 3: a server that rejects `HELLO` with an unknown-command
+error and must fall back to RESP2; a server answering `HELLO` with a flat array,
+asserting the paired dict; and a connection asserting that no `HELLO` is written
+under `protocol=2`. These run against purpose-built socket servers rather than
+Redis, which cannot produce them, and compare against expectations stated in
+`docs/API.md` section 5 rather than against redis-py.
+
+Pipeline behavior, 3: a failing command occupying a pipeline slot, asserting the
+slot carries an exception instance and not an `ErrorReply`; reply ordering across
+a batch whose replies differ in type; and a push frame arriving mid-pipeline
+consuming no slot.
+
+Transactions gains a fifth case: a pipeline mixing a top-level failure and an
+`EXEC` containing a nested failure, asserting both halves of the asymmetry in one
+run. Each is produced by a real
 server condition, never by a synthesized error string: `WRONGTYPE` from a list
 operation on a string key, `NOSCRIPT` from `EVALSHA` with an unknown digest,
 `BUSYGROUP` from a duplicate `XGROUP CREATE`, and a generic error from a
@@ -400,11 +432,26 @@ one would consume a case without testing degradation.
 
 ## 4. Channel 2: chunking, 20 cases
 
-### 4.1 The invariant
+### 4.1 The invariant, and its limit
 
 For a byte sequence `B` and any partition into chunks, feeding the chunks in
 order with a drain after each produces the same value sequence as feeding `B`
 whole and draining.
+
+This invariant is self-referential: it compares a parser against itself and
+therefore cannot detect any defect that is consistent across split schedules. A
+parser that renders `*-1` as `[]`, truncates a blob error at an embedded CRLF, or
+returns `1` for `#t` satisfies the invariant perfectly. The mutation suite
+confirmed seven such defects passing every invariance case despite the corpus
+containing the exact frames.
+
+The channel therefore carries eight absolute-expectation cases alongside the
+invariance cases. Those assert what a frame parses to, against expectations
+written from `docs/PROTOCOL.md` sections 3 and 4, with no parser on the other
+side of the comparison. They cover: the three null forms distinctly, booleans as
+`bool` and not `int`, big numbers as `int`, a blob error whose payload contains
+CRLF, a push frame as `PushMessage` and not a list, and a verbatim string's
+stripped payload with its format retained.
 
 Equality here is stricter than the comparator's. It additionally compares
 `VerbatimBytes.format` and `Attributed.attributes`, reaching past delegating
@@ -425,12 +472,14 @@ from a file.
 
 ### 4.3 Allocation
 
-    one byte feeds, per type group          8
-    exhaustive split at every position      4
+    absolute value expectations             8
+    attribute semantics                     4
+    one byte feeds, per type group          4
+    exhaustive split at every position      3
     seeded random partitions                4
-    pathological boundaries                 4
+    pathological boundaries                 3
                                            --
-                                           20
+                                           26
 
 The exhaustive cases take a small curated frame and feed it split at position
 `i` for every `i` from 1 to `len(frame) - 1`, asserting the invariant at each.
@@ -441,10 +490,26 @@ Pathological boundaries covers a split between CR and LF, a split inside a
 length prefix's digits, a split inside a verbatim format prefix, and a feed
 sequence containing empty `feed(b"")` calls interleaved.
 
-### 4.4 The delegation case
+### 4.4 Attribute semantics, 4 cases, plus delegation
 
-One of the eight one byte cases is reserved for the `Attributed` delegation
-property, asserted directly rather than through the invariant:
+D11 made this channel the sole enforcement of attribute handling, since redis-py
+raises on `|` frames and no oracle case can carry one. The mutation suite found
+that enforcement resting on a single case checking a `repr()` substring: an
+implementation could drop attributes entirely, emit them as standalone values, or
+attach them at the wrong depth, and lose one point out of a hundred.
+
+Four cases now carry it, each asserting one property against a frame built from
+the type definitions, comparing `Attributed.value` and `.attributes` directly
+rather than through `repr`:
+
+    dropped        a decorated value arrives wrapped, with its dictionary intact
+    standalone     an attribute dictionary never appears as a reply of its own
+    depth          an attribute decorates the value at its own nesting level,
+                   verified with attributes at three depths in one frame
+    merge          consecutive attribute frames merge, later keys winning
+
+A fifth case covers the `Attributed` delegation property directly rather than
+through the invariant:
 
     a = Attributed(b"x", {b"k": b"v"})
     assert a == b"x" and b"x" == a
@@ -485,15 +550,16 @@ connections rather than handing the same one out repeatedly.
 
 ### 5.3 Allocation
 
-    borrow, release, reuse, capacity         4
-    health check and eviction                3
+    borrow, release, reuse, capacity         5
+    health check and eviction                4
     poisoning: connection, timeout, post-poison 3
     concurrent utilization and distinct ids  2
     cross-talk under injected timeouts       4
-    close and cleanup semantics              2
+    close and cleanup semantics              3
     capacity exhaustion raises TimeoutError  2
+    idle reuse is genuine                    3
                                             --
-                                            20
+                                            26
 
 ### 5.4 Poisoning
 
@@ -519,6 +585,21 @@ internal flag.
 
 Each case additionally asserts `pool.size` decreased, confirming the connection
 was discarded rather than quietly reused.
+
+The post-poison case must not be run while the server is still inside a
+`DEBUG SLEEP`. The mutation suite found it passing with its refusal assertion
+deleted, because a stalled server times the socket out anyway and `TimeoutError`
+subclasses `ConnectionError`. The case polls the server back to readiness first,
+so the refusal it observes comes from the client's poisoned state and not from
+the socket.
+
+The three idle-reuse cases assert that a pool actually reuses connections rather
+than silently creating a fresh one each time: identity across sequential
+acquisitions, `CLIENT ID` stability across a borrow-release-borrow cycle, and
+`pool.size` remaining at one across ten such cycles. A pool that discards every
+connection on release, or whose health check discards every connection it checks,
+otherwise passes every other case in this channel because the replacement works
+too.
 
 ## 6. Channel 4: resource behavior, 10 cases
 
@@ -565,24 +646,40 @@ interpreter level allocation happening to land inside the window.
     peak ratio at 1 MB, 8 MB, 64 MB payloads        3
     peak ratio under 4 KB chunked feed              2
     reset() releases buffered state                 1
+    drained buffer is released                      1
     pipeline of 10k small replies does not grow     1
-    depth 100 nesting completes structurally        1
-    scaling behavior under chunked feed             2
+    deep nesting completes without recursion        2
+    scaling behavior under chunked feed             3
                                                    --
-                                                   10
+                                                   13
 
 The `reset()` case asserts that after feeding a partial large frame and calling
-`reset`, traced memory returns to within 1.1 times baseline. It catches an
-implementation that never releases its buffer.
+`reset`, retained bytes fall below 10 percent of the payload size.
+
+The comparison is against payload size, not against a baseline snapshot. The
+mutation suite found the original formulation unable to fail: `baseline` read
+immediately after `tracemalloc.start()` is always 0, and a guard of the form
+`ratio = after / baseline if baseline else 1.0` then reports 1.0 unconditionally.
+A mutant retaining 4.1 MB after `reset()` scored green.
+
+The drained-buffer case is the same assertion without `reset()`: after feeding
+and fully draining a large frame, and dropping the returned value, retained bytes
+must fall below 10 percent of the payload. A parser that never releases consumed
+input fails it.
 
 The pipeline case feeds 10,000 small replies, draining and discarding after
 each. Peak retained must not exceed 3.0 times a single reply's size plus 64 KB
 of slack. The slack absorbs interpreter level allocation; the point is that the
 bound does not scale with the reply count.
 
-The depth 100 case has no payload and therefore no meaningful ratio. It asserts
-structurally: the value parses correctly and no `RecursionError` occurs, which
-is what it was actually testing.
+The two deep-nesting cases have no payload and therefore no meaningful ratio.
+The first parses a depth-100 frame and asserts the value. The second parses a
+frame nested past `sys.getrecursionlimit()` and asserts no `RecursionError`.
+
+Depth 100 alone cannot discriminate an iterative parser from a recursive one,
+since CPython's default limit is 1000. The mutation suite confirmed a recursive
+parser passing at 100 and raising `RecursionError` at 2000. The second case is
+what tests the property; the first tests the value.
 
 The two scaling cases implement D14. The first measures per-byte cost at 1 MB,
 8 MB, and 64 MB under a fixed chunk size, taking the minimum of 5 trials at each
