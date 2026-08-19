@@ -275,7 +275,22 @@ class RespParser:
             if result is NEED_MORE:
                 return NEED_MORE
             if result is not _CONSUMED:
+                self._release_if_drained()
                 return result
+
+    def _release_if_drained(self) -> None:
+        """Drop the buffer once every byte fed has been consumed.
+
+        Reached only when a complete reply has just been produced, so no
+        partial frame can be buffered: `_stack` is empty and `_pending` is None
+        whenever this runs. Without it a consumed payload stays resident until
+        the next :meth:`feed` happens to rebind the buffer, which for a caller
+        that stops reading after a large reply is indefinitely.
+        """
+        if self._pos and self._pos == len(self._buf):
+            self._buf = bytearray()
+            self._pos = 0
+            self._scan_from = 0
 
     def reset(self) -> None:
         """Discard all buffered state and return to the initial condition.

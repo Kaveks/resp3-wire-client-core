@@ -29,11 +29,13 @@ from dataclasses import dataclass, field
 
 __all__ = ["Mutation", "MUTATIONS", "by_name"]
 
-# The chunking channel compares a partitioned feed against a whole-buffer feed
-# of the same parser, so it cannot observe a defect that is consistent across
-# split schedules. Only mutations whose effect depends on where the chunks fell,
-# or which destroy metadata the strict comparison reaches for, are aimed at it.
-# Value mappings are aimed at the oracle alone.
+# The chunking channel's invariance cases compare a partitioned feed against a
+# whole-buffer feed of the same parser, so on their own they cannot observe a
+# defect that is consistent across split schedules. D20 added eight
+# absolute-expectation cases for exactly that reason, so a value mapping the
+# absolute cases assert is aimed at this channel as well as at the oracle. A
+# mapping no absolute case covers, such as a double or a set, is aimed at the
+# oracle alone.
 
 ORACLE = "oracle"
 CHUNKING = "chunking"
@@ -203,7 +205,7 @@ add(
 add(
     "verbatim-prefix-not-stripped",
     "the format prefix and its colon are stripped from a verbatim payload",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """            value = VerbatimBytes(
@@ -222,7 +224,7 @@ add(
 add(
     "null-resp3-underscore",
     "`_\\r\\n` produces None",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """            if body:
@@ -238,7 +240,7 @@ add(
 add(
     "null-bulk-string",
     "`$-1\\r\\n` produces None",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """            if n < 0:
@@ -252,7 +254,7 @@ add(
 add(
     "null-array",
     "`*-1\\r\\n` produces None",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """            if n < 0:
@@ -301,7 +303,7 @@ add(
 add(
     "boolean-as-integer",
     "`#t` and `#f` produce bool, not 1 and 0",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """            if body == b"t":
@@ -333,7 +335,7 @@ add(
 add(
     "big-number-as-bytes",
     "`(` produces an arbitrary precision int",
-    [ORACLE],
+    [ORACLE, CHUNKING],
     [(
         "parser.py",
         """        if marker == _COLON or marker == _LPAREN:
@@ -400,7 +402,7 @@ add(
 add(
     "pushes-not-discarded",
     "execute discards a push frame and keeps reading for its own reply",
-    [ORACLE, POOL],
+    [ORACLE],
     [(
         "connection.py",
         """            if isinstance(value, PushMessage):
@@ -774,12 +776,13 @@ add(
 )
 
 add(
-    "drained-buffer-never-released",
-    "peak retained memory does not scale with the number of replies consumed",
+    "consumed-input-never-released",
+    "input the parser has finished with is released, not carried forward",
     [RESOURCE],
-    [(
-        "parser.py",
-        """        pos = self._pos
+    [
+        (
+            "parser.py",
+            """        pos = self._pos
         if pos:
             if pos == len(self._buf):
                 # Fully drained. Rebinding releases the allocation outright
@@ -792,9 +795,21 @@ add(
                 self._scan_from -= pos
                 self._pos = 0
         if data:""",
-        """        if data:""",
-    )],
-    note="docs/HARNESS.md section 6.2, the 10,000 small replies case.",
+            """        if data:""",
+        ),
+        (
+            "parser.py",
+            """        if self._pos and self._pos == len(self._buf):
+            self._buf = bytearray()
+            self._pos = 0
+            self._scan_from = 0""",
+            """        return""",
+        ),
+    ],
+    note="docs/HARNESS.md section 6.2, the drained-buffer case and the 10,000 "
+         "small replies case. Both release paths are removed together because "
+         "either one alone keeps the property true, so neutering one would "
+         "measure the other rather than the property.",
 )
 
 add(

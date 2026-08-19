@@ -44,8 +44,20 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from mutations import MUTATIONS, Mutation, by_name  # noqa: E402
 
-CHANNELS = ("oracle", "chunking", "pool", "resource")
-ALLOCATION = {"oracle": 50, "chunking": 20, "pool": 20, "resource": 10}
+# Taken from the orchestrator rather than restated here. The allocation is the
+# weighting, so a copy of it in this file is a copy that can silently disagree
+# with the harness it is measuring.
+sys.path.insert(0, str(ROOT / "harness"))
+import importlib.util as _importlib_util  # noqa: E402
+
+_spec = _importlib_util.spec_from_file_location(
+    "_harness_run", ROOT / "harness" / "run.py"
+)
+_harness_run = _importlib_util.module_from_spec(_spec)
+_spec.loader.exec_module(_harness_run)
+
+ALLOCATION = dict(_harness_run.CHANNELS)
+CHANNELS = tuple(ALLOCATION)
 TOTAL = sum(ALLOCATION.values())
 
 # docs/HARNESS.md section 7.1. A run that inherits the published visible seed
@@ -164,9 +176,11 @@ def verdict(counts: dict[str, int], mutation: Mutation,
 def render_matrix(rows: list[dict]) -> str:
     """The matrix, as a markdown table."""
     head = (
-        "| mutation | oracle 50 | chunking 20 | pool 20 | resource 10 | "
-        "total | channels broken |\n"
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |\n"
+        "| mutation | "
+        + " | ".join(f"{name} {n}" for name, n in ALLOCATION.items())
+        + " | total | channels broken |\n"
+        + "| --- | " + " | ".join("---:" for _ in ALLOCATION)
+        + " | ---: | --- |\n"
     )
     body = []
     for row in rows:
@@ -235,7 +249,7 @@ def rerender(args) -> int:
         flag = "  <-- " + "; ".join(row["findings"]) if row["findings"] else ""
         print(f"{row['name']:<46} o{counts['oracle']:>3} c{counts['chunking']:>3} "
               f"p{counts['pool']:>3} r{counts['resource']:>3}  "
-              f"= {sum(counts.values()):>3}/100{flag}")
+              f"= {sum(counts.values()):>3}/{TOTAL}{flag}")
     summarise(rows)
     payload = {"seed": seeds, "rerendered": True,
                "allocation": ALLOCATION, "rows": rows}
@@ -337,7 +351,7 @@ def main() -> int:
         shutil.copytree(reference_package, control / "resp3_wire")
         payload = run_harness(control, workdir / "_control.json", env, DEFAULT_TIMEOUT)
         counts = channel_counts(payload)
-        print(f"control (unmutated copy): {sum(counts.values())}/100 "
+        print(f"control (unmutated copy): {sum(counts.values())}/{TOTAL} "
               f"in {payload.get('wall_seconds')}s", flush=True)
         if sum(counts.values()) != TOTAL:
             print("the control run is not clean; every row below would be "
@@ -373,7 +387,7 @@ def main() -> int:
             f"[{index:2d}/{len(selected)}] {mutation.name:<44} "
             f"o{counts['oracle']:>3} c{counts['chunking']:>3} "
             f"p{counts['pool']:>3} r{counts['resource']:>3}  "
-            f"= {sum(counts.values()):>3}/100  ({payload.get('wall_seconds')}s)"
+            f"= {sum(counts.values()):>3}/{TOTAL}  ({payload.get('wall_seconds')}s)"
             f"{flag}",
             flush=True,
         )

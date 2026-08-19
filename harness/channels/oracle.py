@@ -1,4 +1,4 @@
-"""Channel 1: differential comparison against redis-py. 50 cases.
+"""Channel 1: differential comparison against redis-py. 65 cases.
 
 For each case the harness generates a random key prefix, runs a command
 sequence through the client and the same sequence through redis-py against the
@@ -35,6 +35,7 @@ from resp3_wire import (
     WrongTypeError,
 )
 from support.compare import compare
+from support.fake_server import ScriptedServer
 
 pytestmark = pytest.mark.channel("oracle")
 
@@ -472,6 +473,38 @@ def test_watch_that_aborts(agent3, server, oracle, prefix) -> None:
     )
 
 
+def test_both_halves_of_the_error_asymmetry_in_one_batch(agent3, prefix) -> None:
+    """A pipeline slot carries an exception; a nested EXEC error stays a value.
+
+    docs/HARNESS.md section 3.2 allocates this case to assert the asymmetry as
+    an asymmetry, in one run, rather than leaving its two halves to be inferred
+    from two cases that never meet.
+    """
+    key = f"{prefix}:a:k"
+    agent3.execute("UNLINK", key)
+    agent3.execute("SET", key, "a string")
+    results = (agent3.pipeline()
+               .push("LPUSH", key, "x")          # top level failure
+               .push("MULTI")
+               .push("SET", key, "still a string")
+               .push("LPUSH", key, "y")          # nested failure
+               .push("EXEC")
+               .execute())
+    top_level, exec_array = results[0], results[4]
+    assert isinstance(top_level, WrongTypeError), (
+        f"a top level failure in a pipeline slot must be an exception "
+        f"instance, got {type(top_level).__name__}"
+    )
+    assert type(exec_array) is list and len(exec_array) == 2, (
+        f"EXEC array: {exec_array!r}"
+    )
+    nested = exec_array[1]
+    assert isinstance(nested, ErrorReply) and not isinstance(nested, BaseException), (
+        f"a failure nested inside EXEC must stay an ErrorReply value, got "
+        f"{type(nested).__name__}"
+    )
+
+
 # ===========================================================================
 # Protocol and RESP3, 5. RESP2 designated: the protocol=2 negotiation case.
 # ===========================================================================
@@ -559,23 +592,273 @@ def test_unrecognised_code_raises_servererror_itself(agent3, oracle, prefix) -> 
     compare(caught.value, oracle([("GET", key_b, "surplus", "arguments")])[0])
 
 
-def test_moved_parses_slot_and_address() -> None:
-    """The one error case that does not go through the live server.
+def _moved_exception(text: bytes):
+    """Parse a MOVED error string through the parser and map it to an exception.
 
-    A non clustered server cannot produce MOVED, so this drives the parser
-    directly and asserts the fields a MOVED reply is only actionable with.
+    A non clustered server cannot produce MOVED, so the two cases below drive
+    the parser directly rather than going through the live server.
     """
     parser = RespParser()
-    parser.feed(b"-MOVED 3999 127.0.0.1:6381\r\n")
+    parser.feed(text)
     reply = parser.gets()
     assert reply is not NEED_MORE, "a complete error frame was fed"
     assert isinstance(reply, ErrorReply), f"expected ErrorReply, got {reply!r}"
-    assert reply.code == "MOVED"
+    assert reply.code == "MOVED", f"code {reply.code!r}, expected 'MOVED'"
     from resp3_wire.errors import exception_for
 
-    exc = exception_for(reply.code, reply.message)
+    return exception_for(reply.code, reply.message)
+
+
+def test_moved_code_maps_to_moved_error() -> None:
+    """The mapping alone. Section 1 forbids a case asserting two properties."""
+    exc = _moved_exception(b"-MOVED 3999 127.0.0.1:6381\r\n")
     assert isinstance(exc, MovedError), (
         f"the MOVED code must map to MovedError, got {type(exc).__name__}"
     )
+
+
+def test_moved_slot_and_address_are_parsed() -> None:
+    """The fields alone. A MOVED reply is only actionable with both."""
+    exc = _moved_exception(b"-MOVED 3999 127.0.0.1:6381\r\n")
     assert exc.slot == 3999, f"slot {exc.slot!r}, expected 3999"
     assert exc.address == "127.0.0.1:6381", f"address {exc.address!r}"
+
+
+# ===========================================================================
+# RESP3 scalar coverage, 7.
+#
+# docs/HARNESS.md section 3.2. The matrix previously reached none of these wire
+# types, so the bool-before-int ordering that section 2.1 names as the
+# comparator's headline justification was exercised by nothing, and `(`, `>`,
+# and the RESP2 null forms had no case at all.
+# ===========================================================================
+
+
+def test_debug_protocol_true(run_both) -> None:
+    """A `#t` frame is a bool, not the integer 1."""
+    agent, _ = check_last(run_both(lambda k: [("DEBUG", "PROTOCOL", "true")]))
+    assert type(agent) is bool and agent is True, (
+        f"a `#t` frame must produce True, got {agent!r} of type "
+        f"{type(agent).__name__}"
+    )
+
+
+def test_debug_protocol_false(run_both) -> None:
+    """A `#f` frame is a bool, not the integer 0."""
+    agent, _ = check_last(run_both(lambda k: [("DEBUG", "PROTOCOL", "false")]))
+    assert type(agent) is bool and agent is False, (
+        f"a `#f` frame must produce False, got {agent!r} of type "
+        f"{type(agent).__name__}"
+    )
+
+
+def test_debug_protocol_bignum(run_both) -> None:
+    """A `(` frame is an arbitrary precision int."""
+    agent, _ = check_last(run_both(lambda k: [("DEBUG", "PROTOCOL", "bignum")]))
+    assert type(agent) is int, (
+        f"a `(` frame must produce int, got {type(agent).__name__}"
+    )
+
+
+def test_debug_protocol_double(run_both) -> None:
+    """A `,` frame is a float.
+
+    Section 3.2 notes that double parsing otherwise reaches the oracle only
+    incidentally, through the `ZADD GT` case's trailing `ZSCORE`.
+    """
+    agent, _ = check_last(run_both(lambda k: [("DEBUG", "PROTOCOL", "double")]))
+    assert type(agent) is float, (
+        f"a `,` frame must produce float, got {type(agent).__name__}"
+    )
+
+
+def test_debug_protocol_push_is_discarded(run_both) -> None:
+    """A `>` frame must not be delivered as a command reply.
+
+    Redis answers `DEBUG PROTOCOL push` with the command's own bulk string
+    first and the push frame second, so the push is still unread when `execute`
+    returns and is discarded by the following command. A client that returns it
+    instead hands the caller a push where its `ECHO` reply belongs, and every
+    later reply on that connection is one behind.
+    """
+    token = b"after-the-push"
+    agent, _ = check_last(run_both(
+        lambda k: [("DEBUG", "PROTOCOL", "push"), ("ECHO", token)]
+    ))
+    assert agent == token, (
+        f"the reply after a push frame was {agent!r}, expected {token!r}; the "
+        f"push was delivered as a command reply instead of being discarded"
+    )
+
+
+def test_null_array_reply_under_resp2(run_both) -> None:
+    """RESP2 designated: `*-1\\r\\n` is None, not an empty list.
+
+    A blocking pop that times out is the RESP2 null array in its plainest form.
+    Under RESP3 the same reply arrives as `_`, so this is designated RESP2.
+    """
+    agent, _ = check_last(run_both(
+        lambda k: [("BLPOP", k("k"), "0.01")], protocol=2
+    ))
+    assert agent is None, (
+        f"a `*-1` frame must produce None, got {agent!r} of type "
+        f"{type(agent).__name__}"
+    )
+
+
+def test_null_bulk_reply_under_resp2(run_both) -> None:
+    """RESP2 designated: `$-1\\r\\n` is None, not an empty bytes."""
+    agent, _ = check_last(run_both(
+        lambda k: [("HSET", k("k"), "f", "v"), ("HGET", k("k"), "absent")],
+        protocol=2,
+    ))
+    assert agent is None, (
+        f"a `$-1` frame must produce None, got {agent!r} of type "
+        f"{type(agent).__name__}"
+    )
+
+
+# ===========================================================================
+# Negotiation paths, 3.
+#
+# docs/HARNESS.md section 3.2. Redis 7.4 answers HELLO 3 correctly and always
+# will, so these run against purpose-built socket servers and compare against
+# docs/API.md section 5 rather than against redis-py.
+# ===========================================================================
+
+_HELLO_REJECTED = b"-ERR unknown command 'HELLO'\r\n"
+_FLAT_HELLO = (
+    b"*6\r\n"
+    b"$6\r\nserver\r\n$5\r\nredis\r\n"
+    b"$7\r\nversion\r\n$6\r\n7.4.10\r\n"
+    b"$5\r\nproto\r\n:3\r\n"
+)
+
+
+def test_negotiation_falls_back_when_hello_is_rejected() -> None:
+    """A ServerError reply to HELLO is a fallback, not a failure."""
+
+    def handler(args, index):
+        if args[0].upper() == b"HELLO":
+            return _HELLO_REJECTED
+        return b"+PONG\r\n"
+
+    with ScriptedServer(handler) as fake:
+        conn = Connection(port=fake.port, protocol=3, timeout=5.0)
+        conn.connect()
+        try:
+            assert conn.protocol_version == 2, (
+                f"a server that rejects HELLO must leave the connection at "
+                f"RESP2, got {conn.protocol_version}"
+            )
+            assert conn.server_info == {}, (
+                f"fallback leaves server_info empty, got {conn.server_info!r}"
+            )
+        finally:
+            conn.close()
+
+
+def test_negotiation_pairs_a_flat_array_hello_reply() -> None:
+    """A server answering HELLO with a flat array still yields a dict."""
+
+    def handler(args, index):
+        if args[0].upper() == b"HELLO":
+            return _FLAT_HELLO
+        return b"+PONG\r\n"
+
+    with ScriptedServer(handler) as fake:
+        conn = Connection(port=fake.port, protocol=3, timeout=5.0)
+        conn.connect()
+        try:
+            info = conn.server_info
+            assert type(info) is dict, (
+                f"server_info is always a dict, got {type(info).__name__}"
+            )
+            assert info == {b"server": b"redis", b"version": b"7.4.10",
+                            b"proto": 3}, f"paired wrongly: {info!r}"
+        finally:
+            conn.close()
+
+
+def test_no_hello_is_written_under_protocol_2() -> None:
+    """With `protocol=2` no HELLO is sent at all.
+
+    Asserted on the bytes the server received, which is the only place the
+    absence of a write is observable.
+    """
+
+    def handler(args, index):
+        return b"+PONG\r\n"
+
+    with ScriptedServer(handler) as fake:
+        conn = Connection(port=fake.port, protocol=2, timeout=5.0)
+        conn.connect()
+        try:
+            assert conn.execute("PING") == b"PONG"
+            assert fake.command_names() == [b"PING"], (
+                f"a protocol=2 connection wrote {fake.command_names()!r}; it "
+                f"must write no HELLO"
+            )
+        finally:
+            conn.close()
+
+
+# ===========================================================================
+# Pipeline behavior, 3. docs/HARNESS.md section 3.2, docs/API.md section 7.
+# ===========================================================================
+
+
+def test_pipeline_slot_carries_an_exception_instance(agent3, prefix) -> None:
+    """A failing command occupies its slot as an exception, not an ErrorReply.
+
+    This is the pipeline half of the asymmetry in docs/API.md section 7.2. The
+    nested half is asserted by the transactions cases.
+    """
+    key = f"{prefix}:a:k"
+    agent3.execute("UNLINK", key)
+    results = (agent3.pipeline().push("SET", key, "v")
+               .push("LPUSH", key, "x").execute())
+    assert results[0] == b"OK", f"first slot {results[0]!r}"
+    assert isinstance(results[1], WrongTypeError), (
+        f"a failing command's slot must carry the exception instance, got "
+        f"{type(results[1]).__name__}"
+    )
+    assert not isinstance(results[1], ErrorReply), (
+        "a pipeline slot carries an exception, not an ErrorReply value"
+    )
+
+
+def test_pipeline_preserves_order_across_mixed_reply_types(agent3, prefix) -> None:
+    """Replies come back in the order the commands were queued.
+
+    The replies differ in type at every position, so a batch returned in any
+    other order is visible without depending on the values themselves.
+    """
+    key = f"{prefix}:a:k"
+    agent3.execute("UNLINK", key)
+    results = (agent3.pipeline()
+               .push("SET", key, "v")            # simple string
+               .push("STRLEN", key)              # integer
+               .push("GET", key)                 # bulk string
+               .push("EXISTS", f"{key}:missing")  # integer 0
+               .push("TYPE", key)                # simple string
+               .execute())
+    shapes = [type(r).__name__ for r in results]
+    assert shapes == ["bytes", "int", "bytes", "int", "bytes"], (
+        f"replies came back as {shapes}, expected the queue order"
+    )
+    assert results == [b"OK", 1, b"v", 0, b"string"], f"out of order: {results!r}"
+
+
+def test_push_frame_mid_pipeline_consumes_no_slot(agent3) -> None:
+    """A push arriving mid-pipeline is discarded and takes no reply slot."""
+    token = b"pipeline-after-push"
+    results = (agent3.pipeline()
+               .push("DEBUG", "PROTOCOL", "push")
+               .push("ECHO", token)
+               .execute())
+    assert len(results) == 2, f"expected 2 slots, got {len(results)}"
+    assert results[1] == token, (
+        f"the slot after a push frame carried {results[1]!r}, expected "
+        f"{token!r}; the push consumed a reply slot"
+    )

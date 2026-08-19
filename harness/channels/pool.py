@@ -1,4 +1,4 @@
-"""Channel 3: pool integrity under concurrency. 20 cases.
+"""Channel 3: pool integrity under concurrency. 26 cases.
 
 Concurrent workers borrow from a shared pool, issue commands tagged with a per
 worker unique token, and assert that every reply carries their own token. A
@@ -75,22 +75,15 @@ def side_channel(server):
     conn.close()
 
 
-@pytest.fixture
-def stalling(server):
-    """For cases that use DEBUG SLEEP, which stalls the entire server.
+def quiesce(port: int) -> None:
+    """Poll a stalled server over a raw socket until it answers again.
 
-    Redis is single threaded, so a sleeping server answers nobody: a second
-    connection cannot even complete its HELLO while one is in progress. Without
-    this, the stall outlives the case that caused it and the next case fails
-    during negotiation for a reason that has nothing to do with what it tests.
-
-    Teardown polls the server over a raw socket until it answers again. That is
-    a bounded readiness check, not a sleep used as synchronisation.
+    A bounded readiness check, not a sleep used as synchronisation. Deliberately
+    does not go through the client package, which is the thing under test.
     """
-    yield
     for _ in range(_QUIESCE_ATTEMPTS):
         try:
-            if b"PONG" in raw_command(server.port, "PING", timeout=0.5):
+            if b"PONG" in raw_command(port, "PING", timeout=0.5):
                 return
         except OSError:
             pass
@@ -99,6 +92,19 @@ def stalling(server):
         f"server did not become responsive within "
         f"{_QUIESCE_ATTEMPTS * _QUIESCE_INTERVAL:.1f}s after a DEBUG SLEEP case"
     )
+
+
+@pytest.fixture
+def stalling(server):
+    """For cases that use DEBUG SLEEP, which stalls the entire server.
+
+    Redis is single threaded, so a sleeping server answers nobody: a second
+    connection cannot even complete its HELLO while one is in progress. Without
+    this, the stall outlives the case that caused it and the next case fails
+    during negotiation for a reason that has nothing to do with what it tests.
+    """
+    yield
+    quiesce(server.port)
 
 
 def await_interval(since: float, interval: float) -> None:
@@ -156,7 +162,7 @@ def tagged_round(pool: ConnectionPool, worker: int, rounds: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Borrow, release, reuse, capacity. 4 cases.
+# Borrow, release, reuse, capacity. 5 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -169,12 +175,14 @@ def test_acquire_returns_a_live_connection(make_pool) -> None:
     pool.release(conn)
 
 
-def test_release_makes_a_connection_idle_and_reusable(make_pool) -> None:
+def test_release_moves_a_connection_to_the_idle_set(make_pool) -> None:
+    """The bookkeeping. That the idle connection is then reused is asserted by
+    the idle-reuse cases below, so that neither case carries two properties."""
     pool = make_pool(max_connections=2)
     first = pool.acquire()
     pool.release(first)
     assert pool.idle == 1 and pool.in_use == 0
-    assert pool.acquire() is first, "an idle connection must be reused, not replaced"
+    assert pool.size == 1, "releasing must not discard a healthy connection"
 
 
 def test_pool_grows_to_max_connections_and_no_further(make_pool) -> None:
@@ -203,8 +211,41 @@ def test_release_validates_provenance(make_pool, server) -> None:
     assert pool.idle == 1, "a rejected double release must not duplicate the connection"
 
 
+def test_capacity_holds_under_concurrent_acquisition(make_pool) -> None:
+    """Racing borrowers cannot push the pool past max_connections.
+
+    A pool that opens connections outside its lock has to reserve the slot
+    before it starts connecting, or several threads each see room and each
+    create one. The overshoot is invisible to a sequential case.
+    """
+    limit = 3
+    pool = make_pool(max_connections=limit, timeout=5.0)
+    start = threading.Barrier(WORKERS, timeout=BARRIER_TIMEOUT)
+    observed: list[int] = []
+    lock = threading.Lock()
+
+    def body(index: int) -> None:
+        start.wait()
+        try:
+            conn = pool.acquire()
+        except TimeoutError:
+            return
+        try:
+            with lock:
+                observed.append(pool.size)
+        finally:
+            pool.release(conn)
+
+    run_workers(WORKERS, body)
+    assert observed, "no worker acquired a connection"
+    assert max(observed) <= limit, (
+        f"the pool held {max(observed)} connections against a limit of {limit}"
+    )
+    assert pool.size <= limit, f"pool.size settled at {pool.size}, limit {limit}"
+
+
 # ---------------------------------------------------------------------------
-# Health check and eviction. 3 cases.
+# Health check and eviction. 4 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -242,6 +283,27 @@ def test_health_check_disabled_by_default(make_pool) -> None:
     assert again is conn and again.execute("CLIENT", "ID") == conn_id
 
 
+def test_a_connection_passing_its_health_check_is_the_one_handed_back(
+    make_pool,
+) -> None:
+    """The check discards connections that fail it, not ones that pass it.
+
+    The mutation suite found the adjacent case green against a pool whose check
+    discarded every connection it examined, because the replacement worked too.
+    `CLIENT ID` is what distinguishes the two.
+    """
+    pool = make_pool(max_connections=2, health_check_interval=HEALTH_INTERVAL)
+    conn = pool.acquire()
+    conn_id = conn.execute("CLIENT", "ID")
+    pool.release(conn)
+    await_interval(time.monotonic(), HEALTH_INTERVAL * 1.2)
+    checked = pool.acquire()
+    assert checked.execute("CLIENT", "ID") == conn_id, (
+        "a connection that passed its health check was discarded and replaced; "
+        "the check must evict only connections that fail it"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Poisoning. 3 cases. Each induces its failure through the public API and
 # additionally asserts pool.size decreased.
@@ -277,12 +339,21 @@ def test_timeout_poisons_and_is_discarded(make_pool, stalling) -> None:
     assert pool.size == before - 1, "a timed-out connection was returned to the pool"
 
 
-def test_poisoned_connection_refuses_further_commands(make_pool, stalling) -> None:
-    """docs/API.md section 6.3: any further execute raises ConnectionError."""
+def test_poisoned_connection_refuses_further_commands(make_pool, server, stalling) -> None:
+    """docs/API.md section 6.3: any further execute raises ConnectionError.
+
+    The server is polled back to readiness before the refusal is asserted. The
+    mutation suite found this case passing with its refusal deleted, because a
+    still-stalled server times the socket out anyway and `TimeoutError`
+    subclasses `ConnectionError`. With the server answering again, a client that
+    does not refuse reads the delayed reply and returns a value, which is the
+    failure this case exists to see.
+    """
     pool = make_pool(max_connections=2, timeout=0.3)
     conn = pool.acquire()
     with pytest.raises(TimeoutError):
         conn.execute("DEBUG", "SLEEP", 1)
+    quiesce(server.port)
     with pytest.raises(ConnectionError):
         conn.execute("PING")
     with pytest.raises(ConnectionError):
@@ -389,7 +460,7 @@ def test_no_cross_talk_after_a_killed_connection_was_released(make_pool, side_ch
 
 
 # ---------------------------------------------------------------------------
-# Close and cleanup. 2 cases.
+# Close and cleanup. 3 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -461,3 +532,63 @@ def test_exhaustion_clears_once_a_connection_is_released(make_pool) -> None:
     assert acquired.is_set(), (
         "a blocked acquire was not woken when a connection was released"
     )
+
+
+def test_release_after_close_is_a_discard_not_an_error(make_pool) -> None:
+    """D16. A borrower unwinding after another thread closed the pool.
+
+    Raising there would mask whatever exception the `with` block was already
+    propagating, so the release is a discard.
+    """
+    pool = make_pool(max_connections=2)
+    conn = pool.acquire()
+    pool.close()
+    pool.release(conn)  # must not raise
+    assert pool.size == 0, "a release after close must not repopulate the pool"
+
+
+# ---------------------------------------------------------------------------
+# Idle reuse is genuine. 3 cases.
+#
+# docs/HARNESS.md section 5.3. A pool that discards every connection on release,
+# or whose health check discards every connection it checks, passes every other
+# case in this channel because the replacement works too.
+# ---------------------------------------------------------------------------
+
+
+def test_an_idle_connection_is_reused_by_identity(make_pool) -> None:
+    """The same object comes back, rather than an equivalent replacement."""
+    pool = make_pool(max_connections=2)
+    first = pool.acquire()
+    pool.release(first)
+    again = pool.acquire()
+    assert again is first, (
+        "an idle connection must be reused, not replaced by a fresh one"
+    )
+
+
+def test_client_id_is_stable_across_a_borrow_release_borrow_cycle(make_pool) -> None:
+    """The server agrees it is the same connection, not just the same object."""
+    pool = make_pool(max_connections=2)
+    conn = pool.acquire()
+    first_id = conn.execute("CLIENT", "ID")
+    pool.release(conn)
+    again = pool.acquire()
+    second_id = again.execute("CLIENT", "ID")
+    assert second_id == first_id, (
+        f"CLIENT ID moved from {first_id} to {second_id} across a release and "
+        f"reacquire; the pool opened a new socket instead of reusing one"
+    )
+
+
+def test_pool_size_stays_at_one_across_repeated_cycles(make_pool) -> None:
+    """Ten borrow-release cycles leave one connection, not ten."""
+    pool = make_pool(max_connections=4)
+    for cycle in range(10):
+        conn = pool.acquire()
+        assert conn.execute("PING") == b"PONG"
+        pool.release(conn)
+        assert pool.size == 1, (
+            f"after {cycle + 1} borrow-release cycles the pool holds "
+            f"{pool.size} connections; a reusing pool holds one"
+        )

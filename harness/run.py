@@ -2,7 +2,8 @@
 
 Weights are realized through case counts rather than a weight table, so the
 50/20/20/10 split holds under a harness that scores as the fraction of tests
-passed and remains sensible under one that scores pass or fail.
+passed and remains sensible under one that scores pass or fail. D19 scaled the
+counts to 65/26/26/13, which is the same split at 1.3 times the case count.
 
 Two outcomes are emitted, because the platform's mechanism for reading a
 continuous score is not yet confirmed: a JSON report, and a process exit code
@@ -33,12 +34,14 @@ sys.path.insert(0, str(HARNESS_DIR))
 
 from support.sansio import check_sansio  # noqa: E402
 
-# docs/HARNESS.md section 1. The counts are the weights.
+# docs/HARNESS.md section 1. The counts are the weights. D19 scaled them by 1.3
+# from 50/20/20/10, holding the ratios, to open thirty slots for properties the
+# mutation suite found enforced by no case.
 CHANNELS = {
-    "oracle": 50,
-    "chunking": 20,
-    "pool": 20,
-    "resource": 10,
+    "oracle": 65,
+    "chunking": 26,
+    "pool": 26,
+    "resource": 13,
 }
 TOTAL_CASES = sum(CHANNELS.values())
 
@@ -165,7 +168,8 @@ def main() -> int:
     }
     if collected != TOTAL_CASES:
         # Collection is part of the contract: a case that cannot even be
-        # collected is a case that did not pass, and the denominator stays 100.
+        # collected is a case that did not pass, and the denominator does not
+        # shrink to match what happened to be collected.
         payload["note"] = (
             f"collected {collected} cases, expected {TOTAL_CASES}; "
             f"uncollected cases score as failures"
