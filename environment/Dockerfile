@@ -113,6 +113,13 @@ RUN printf 'agent ALL=(oracle) NOPASSWD: /opt/venv-oracle/bin/python\n' \
 # The workspace: the starter package and the visible tests, and nothing else.
 # --------------------------------------------------------------------------
 WORKDIR /app
+# /app itself must belong to the implementer, not only its contents. WORKDIR
+# creates it root-owned and `COPY --chown` changes only what it copies, so
+# without this the agent can edit files inside the package but cannot add a
+# module beside it or replace the package outright. The oracle stage's
+# solve.sh does exactly that, and failed here with "Permission denied" until
+# the bundle was verified end to end.
+RUN chown agent:agent /app
 COPY --chown=agent:agent starter/resp3_wire /app/resp3_wire
 COPY --chown=agent:agent visible_tests /app/visible_tests
 
