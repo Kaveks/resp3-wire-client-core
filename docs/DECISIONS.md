@@ -413,3 +413,48 @@ terminated at 30.9 seconds.
 The distinction generalises. A control that verifies the mechanism is present is
 weaker than one that verifies the mechanism acts. Where both are available, the
 second is the control.
+
+## D29. End-to-end verification is not optional
+
+Ratified 2026-08-19.
+
+Two defects reached step 10 that no earlier verification could have found, and
+both would have caused the platform's oracle stage to fail with the reference
+scoring zero.
+
+`python -m pytest` prepended the working directory to `sys.path`, so the harness
+graded whatever `resp3_wire` happened to sit in `/app` rather than the one
+`--client` named. Recorded as D27.
+
+`/app` was root-owned, because `WORKDIR` creates it that way and `COPY --chown`
+changes only what it copies. `solve.sh` could not remove the starter package to
+put the reference in its place.
+
+Neither surfaced earlier because every prior run either only read `/app` or
+mounted the implementation elsewhere. The common shape: a control verified in
+the arrangement it was developed in, failing in the arrangement it ships in.
+
+Any change to the image, the entrypoints, or the working directory is re-checked
+by running `solve.sh` and then `test.sh` through the bundle's own paths, from a
+cold build, offline. Nothing short of that is evidence.
+
+## D30. The bundle's Docker build context is not specified
+
+Ratified 2026-08-19. Open risk, recorded rather than resolved.
+
+The platform requires `environment/Dockerfile` and does not state the build
+context. If it is the Dockerfile's own directory, the image's inputs must live
+under `environment/`. If it is the bundle root, the same `COPY` paths resolve to
+nothing and the build fails outright, which is a deterministic rejection rather
+than a partial score.
+
+The Dockerfile is written to work under either context where that is achievable,
+and where it is not, the inputs are duplicated so both path forms resolve. A few
+kilobytes against a 428 KB bundle is the correct price for removing a total
+failure mode.
+
+The `task.toml` key names under `[environment]` carry the same character. The
+platform documentation names `cpus`, `memory_mb`, `storage_mb`, and `gpus`;
+`docs/SUBMISSION.md` uses the draft form's camelCase. The TOML uses the
+documented snake_case, and the derivation from SUBMISSION.md maps between them
+rather than copying spelling.

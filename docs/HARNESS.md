@@ -763,7 +763,8 @@ verifier timeout, which itself sits well inside the platform's per trial pool.
 Actual timings are measured and recorded during packaging rather than
 estimated.
 
-Redis is started by `tests/test.sh` on a private port with persistence
+Redis is started by `harness/support/redis_boot.py` from a session fixture,
+reached through `tests/test.sh`, on a private port with persistence
 disabled, polled for readiness, flushed, and torn down. The harness never
 assumes a server already exists and never uses the default port.
 
