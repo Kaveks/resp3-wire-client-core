@@ -346,3 +346,22 @@ The AST check remains, unchanged, as the third layer.
 
 The oracle subprocess is unaffected: it runs as a different user with its own
 interpreter, which is the arrangement D18 already describes.
+
+## D26. A check that has not been seen to fail is not a check
+
+Ratified 2026-08-19.
+
+Three times in this project a check passed because its success path was
+reachable without the property holding. The `reset()` case divided by a baseline
+that was always zero and reported 1.0 unconditionally. Thirteen chunking cases
+compared a parser against itself, which a parser producing nothing satisfies
+exactly. Four image checks fed Python on stdin to `docker run` without `-i`, so
+the interpreter read nothing and exited 0.
+
+Each was found by something other than the check: the mutation suite, the attack
+suite, and manual review of the script written to verify the controls.
+
+Every assertion added from here is validated by breaking the property it tests
+and observing the failure. This applies to harness cases, image checks, and
+tooling equally. The cost is one deliberate breakage per assertion; the
+alternative is a verifier whose green is uninformative.
