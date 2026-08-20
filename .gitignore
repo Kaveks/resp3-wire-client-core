@@ -7,3 +7,5 @@ __pycache__/
 .coverage
 *.zip
 .DS_Store
+score.json
+score.xml
