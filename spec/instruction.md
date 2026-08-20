@@ -4,12 +4,6 @@ Implement `resp3_wire`, a Redis client library that speaks the Redis
 Serialization Protocol directly over TCP, using only the Python standard
 library.
 
-The interesting part of this task is not the commands. It is correctness at the
-protocol boundary: a parser that survives arbitrary fragmentation of its input,
-RESP3 attribute frames that decorate values rather than becoming values, and a
-connection pool that refuses to hand out a socket whose stream position is
-unknown.
-
 ## Constraints
 
 The package imports only from the Python standard library. No third party
@@ -103,16 +97,9 @@ For any byte sequence `B` and any partition of it into chunks, feeding the
 chunks in order with a drain after each must produce the same sequence of
 values as feeding `B` whole and draining once.
 
-This holds for every partition, with no exceptions: one byte at a time, a split
-between the CR and the LF of a terminator, a split inside the digits of a
-length prefix, a split inside a verbatim string's format prefix, and splits at
-arbitrary depths of nesting. Metadata survives too, so a `VerbatimBytes` keeps
-its format and an `Attributed` keeps its attributes no matter where the
-boundaries fall.
-
-Your parser will be fed with randomly chosen partitions, using seeds you have
-not seen. An implementation that assumes complete frames, or that only handles
-the splits the visible tests happen to exercise, will fail.
+This holds for every partition, with no exceptions. Metadata survives too, so a
+`VerbatimBytes` keeps its format and an `Attributed` keeps its attributes
+whatever the partition.
 
 ### RESP2 types
 
@@ -216,8 +203,7 @@ not recurse.
 An attribute frame `|N\r\n` is followed by `2N` values forming its dictionary,
 then by the value it decorates. The attribute frame is not itself a reply.
 
-An attribute dictionary must never be emitted as a standalone value. This is
-the most commonly failed requirement in this specification.
+An attribute dictionary must never be emitted as a standalone value.
 
 Attributes may appear at any depth, including on an individual element inside
 an array, on a map value, or on a set member. Consecutive attribute frames
@@ -243,9 +229,8 @@ Decorated values are returned wrapped. Undecorated values are returned bare.
 `slot: int` and `address: str` out of the error text, since a MOVED reply is
 only actionable with those. An unrecognised code raises `ServerError` itself.
 
-The distinction that matters: `ProtocolError`, `ConnectionError`, and
-`TimeoutError` all mean the connection is unusable. `ServerError` does not, and
-the connection stays healthy, because the server completed its reply normally.
+`ProtocolError`, `ConnectionError`, and `TimeoutError` all mean the connection
+is unusable. `ServerError` does not; the connection stays usable.
 
 ## Part 3: connection
 
@@ -272,25 +257,20 @@ reply. `bytes` pass through, `str` encodes UTF-8, `int` and `float` encode via
 `repr`, `bool` raises `TypeError` rather than encoding as an integer, anything
 else raises `TypeError`.
 
-`execute()` with no arguments raises `ValueError` and writes nothing. Redis
-sends no reply to an empty command array, so writing one would block until the
-socket timeout rather than fail.
+`execute()` with no arguments raises `ValueError` and writes nothing.
 
 `server_info` before `connect` returns an empty dict rather than raising. Only
 `protocol_version` raises `RuntimeError`, because a version has no truthful
 value before negotiation while an empty `server_info` is accurate.
 
 A top level `ErrorReply` in the reply is converted to the matching exception and
-raised. A nested one is returned as a value. This asymmetry is required: `EXEC`
-returns an array in which individual commands may have failed, and raising on
-the first would make a partially failed transaction unrepresentable.
+raised. A nested one is returned as a value.
 
 `execute` returns `Attributed` values intact. It does not unwrap them.
 
 A `PushMessage` arriving while `execute` waits for a reply is discarded, and
 `pushes_discarded` increments. Reading continues until a non-push reply
-arrives. Treating a push frame as a command reply desynchronises the connection
-permanently, which is why parsing `>` matters even with no pubsub surface.
+arrives.
 
 `execute` on a disconnected connection raises `ConnectionError` and does not
 reconnect implicitly.
@@ -344,8 +324,7 @@ then raises `TimeoutError`.
 
 A `timeout` of `None` means socket operations block indefinitely, but acquisition
 does not: `acquire` always applies a bound, using 30 seconds when `timeout` is
-`None`. A pool that can block forever at capacity is a deadlock rather than a
-configuration.
+`None`.
 
 When `health_check_interval` is nonzero and that many seconds have elapsed
 since a connection was last used, check it with `PING` before handing it out.
@@ -353,15 +332,11 @@ Discard one that fails and try another.
 
 `release` returns a connection to the idle set or discards it per the poisoning
 rules. Releasing a connection the pool did not issue raises `ValueError`, as
-does releasing one the pool is not currently lending. Silently accepting a
-double release would put one connection in the idle set twice and hand it to
-two borrowers. A release arriving after `close` is a discard rather than an
-error, since raising there would mask whatever exception the caller's block was
-already propagating.
+does releasing one the pool is not currently lending. A release arriving after
+`close` is a discard rather than an error.
 
-`push()` with no arguments raises `ValueError`, for the same reason as
-`execute()`. `Pipeline` may use internal `Connection` methods to write without
-reading, since the public `execute` couples one write to one read.
+`push()` with no arguments raises `ValueError`. `Pipeline` may use internal
+`Connection` methods to write without reading.
 
 `close` closes every connection, idle and in use. Subsequent `acquire` raises
 `ConnectionError`.
@@ -372,13 +347,6 @@ Discard rather than return a connection whose most recent use raised
 `ProtocolError`, `ConnectionError`, or `TimeoutError`. Do not discard on
 `ServerError`.
 
-The timeout case is the one that matters. A timeout after the command was
-written but before the reply was fully read leaves an unknown number of bytes
-in flight. Returning that connection means the next borrower reads the tail of
-someone else's reply. That is silent cross-talk, not a visible error, and it is
-checked with concurrent workers issuing tagged commands and asserting every
-reply carries their own tag.
-
 A poisoned connection raises `ConnectionError` on any further `execute`.
 
 ### Concurrency
@@ -386,11 +354,8 @@ A poisoned connection raises `ConnectionError` on any further `execute`.
 The pool is thread safe. A `Connection` is not, and the pool must issue one to
 at most one borrower at a time.
 
-Pool locking must not serialise command execution. Holding a lock across a
-socket read reduces the pool to one connection's throughput. This is checked
-structurally, not by timing: workers acquire simultaneously and block on a
-barrier before releasing, so an implementation that serialises never reaches
-the barrier.
+Pool locking must not serialise command execution. No lock may be held across
+a socket operation.
 
 ## Part 5: pipeline
 
@@ -422,9 +387,7 @@ slot.
 `MULTI` and `EXEC` are ordinary commands; there is no transaction abstraction.
 Pipeline `MULTI`, the queued commands, and `EXEC`, and `EXEC`'s array arrives
 as one element of the result list. Per command errors inside that array are
-`ErrorReply` values, not exceptions, because they are nested rather than top
-level. Pipeline slots carry exceptions; nested aggregate positions carry
-`ErrorReply`.
+`ErrorReply` values, not exceptions.
 
 ## Part 6: client-side caching
 
@@ -470,22 +433,11 @@ increment `pushes_discarded`. Any other push frame still does.
 
 **A cached read must never return a value the server has already invalidated.**
 
-That is the whole of it, and it is harder than it reads.
-
-An invalidation is not delivered in response to anything you did. It arrives on
-whichever connection was tracking the key, at whatever moment the server chooses,
-including in the socket buffer before you have finished parsing the reply that
-would populate the cache, or during an unrelated command, or while the
-connection sits idle in the pool with nobody reading it.
-
-The cache is pool-wide, so the connection that receives an invalidation is
-usually not the connection that cached the value. Eviction has to reach shared
-state across connections, under concurrency, and the rule from Part 4 still
-holds: no lock may be held across socket I/O.
+The cache is pool-wide: one cache shared by every connection the pool holds, not
+one cache per connection.
 
 Serving a stale value is a failure. Serving a miss where a hit was possible is
-not. You are not graded on hit rate, but a cache that never caches is not a
-cache, and the checking asserts that hits occur.
+not. Hit rate is not graded, but a cache that never caches is not a cache.
 
 ## Out of scope
 
@@ -496,32 +448,20 @@ commands, or anything inside `MULTI`.
 
 ## How your work is checked
 
-Four independent areas, weighted roughly 50, 20, 20, and 10.
+Five graded areas, weighted roughly 42, 17, 17, 15, and 9 percent:
 
-Your client is run against a live Redis server alongside redis-py, executing
-the same commands against the same server, and the results are compared
-structurally. Expected values are computed at run time from the server; there
-are no stored answers. Keys are randomized. This covers strings, lists, hashes,
-sets, sorted sets, keyspace commands, transactions, negotiation under both
-protocol versions, and the four error mappings. Both RESP3 and RESP2
-connections are exercised, and returning RESP3 shapes on a RESP2 connection is
-wrong even where the values look better.
+    command results       against a live server, both protocol versions
+    parser correctness    values and the fragmentation invariant
+    pool integrity        under concurrency
+    cache correctness     invalidation
+    parser resources      memory and cost scaling
 
-Your parser is fed the same bytes under many partitions, including one byte at
-a time and randomly chosen boundaries under seeds you have not seen, and the
-outputs must match whole-buffer parsing exactly, metadata included.
+Scoring is continuous, so partial work earns partial credit.
 
-Your pool is exercised by concurrent workers that borrow, issue tagged
-commands, trigger timeouts and disconnects, and assert no reply ever reaches
-the wrong worker.
+Two requirements are performance rather than behavior. While a reply is being
+parsed, peak bytes retained by the parser must stay under three times the
+payload size; holding the parsed value is expected and counts toward that. And
+parsing cost must grow linearly with payload size, not faster.
 
-Your parser's memory behavior is measured while large payloads pass through it.
-Holding a parsed value is expected; a bulk string of N bytes occupies N bytes.
-What is measured is overhead beyond that, and whether cost grows linearly with
-payload size rather than quadratically. An implementation that repeatedly
-copies a growing buffer fails.
-
-The visible tests in `/app/tests/` show the expected API and basic behavior.
-They are a starting point, not the standard: they use a published seed and
-avoid adversarial fragmentation, pool corruption, and the full command matrix.
-Passing them is necessary and far from sufficient.
+The visible tests in `/app/tests/` demonstrate the API and basic behavior.
+Passing them is necessary and not sufficient.

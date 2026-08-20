@@ -247,8 +247,8 @@ def rerender(args) -> int:
     for row in rows:
         counts = row["counts"]
         flag = "  <-- " + "; ".join(row["findings"]) if row["findings"] else ""
-        print(f"{row['name']:<46} o{counts['oracle']:>3} c{counts['chunking']:>3} "
-              f"p{counts['pool']:>3} r{counts['resource']:>3}  "
+        cells = " ".join(f"{name[:4]}{counts[name]:>3}" for name in CHANNELS)
+        print(f"{row['name']:<46} {cells}  "
               f"= {sum(counts.values()):>3}/{TOTAL}{flag}")
     summarise(rows)
     payload = {"seed": seeds, "rerendered": True,
@@ -383,10 +383,12 @@ def main() -> int:
             "sansio_violations": payload.get("sansio_violations"),
         })
         flag = "  <-- " + "; ".join(findings) if findings else ""
+        # Derived from the allocation, not restated. A hard-coded column list
+        # silently dropped the caching channel when D35 added it: the totals
+        # stayed correct and the row stopped saying where the loss was.
+        cells = " ".join(f"{name[:4]}{counts[name]:>3}" for name in CHANNELS)
         print(
-            f"[{index:2d}/{len(selected)}] {mutation.name:<44} "
-            f"o{counts['oracle']:>3} c{counts['chunking']:>3} "
-            f"p{counts['pool']:>3} r{counts['resource']:>3}  "
+            f"[{index:2d}/{len(selected)}] {mutation.name:<44} {cells}  "
             f"= {sum(counts.values()):>3}/{TOTAL}  ({payload.get('wall_seconds')}s)"
             f"{flag}",
             flush=True,

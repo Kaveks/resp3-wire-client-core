@@ -11,10 +11,13 @@ rather than letting the parser pull.
 
 from __future__ import annotations
 
+import select
 import socket
+import threading
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
+from .cache import MISS, ReplyCache
 from .errors import ConnectionError, ProtocolError, TimeoutError, exception_for
 from .parser import NEED_MORE, RespParser
 from .protocol import ErrorReply, PushMessage, unwrap
@@ -25,6 +28,26 @@ if TYPE_CHECKING:  # pragma: no cover - avoids an import cycle at runtime
 __all__ = ["Connection"]
 
 _RECV_SIZE = 65536
+
+# docs/API.md section 7A.2: read-only commands with exactly one key, in
+# position 1. The contract is explicit that deciding which commands are
+# cacheable is a lookup table and that a lookup table is not what the
+# requirement is about, so this stays small and obvious. Anything absent is
+# simply not cached, which is never a failure.
+_CACHEABLE: Final = frozenset({
+    b"GET", b"GETRANGE", b"STRLEN", b"SUBSTR",
+    b"TYPE", b"TTL", b"PTTL", b"EXPIRETIME",
+    b"HGET", b"HGETALL", b"HLEN", b"HSTRLEN", b"HKEYS", b"HVALS",
+    b"LRANGE", b"LLEN", b"LINDEX", b"LPOS",
+    b"SMEMBERS", b"SCARD", b"SISMEMBER",
+    b"ZSCORE", b"ZCARD", b"ZRANGE", b"ZRANGEBYLEX",
+})
+
+# Entered by MULTI and left by EXEC or DISCARD. Nothing inside a transaction is
+# cached or served from cache: the replies are QUEUED placeholders, and EXEC's
+# array is not attributable to any single key.
+_MULTI_ENTER: Final = frozenset({b"MULTI"})
+_MULTI_LEAVE: Final = frozenset({b"EXEC", b"DISCARD", b"RESET"})
 
 
 def _encode_arg(value: object) -> bytes:
@@ -106,6 +129,8 @@ class Connection:
         connect_timeout: float | None = None,
         db: int = 0,
         client_name: str | None = None,
+        cache: ReplyCache | None = None,
+        predrain: Any = None,
     ) -> None:
         if protocol not in (2, 3):
             raise ValueError(f"protocol must be 2 or 3, got {protocol!r}")
@@ -123,6 +148,21 @@ class Connection:
         self._server_info: dict[Any, Any] = {}
         self._poisoned = False
         self._pushes_discarded = 0
+        # The pool's cache, shared across every connection it owns, and a hook
+        # that drains invalidations sitting unread on the pool's *other*
+        # connections. Both are None when caching is off, which is the default
+        # and the configuration every other channel exercises.
+        self._cache = cache
+        self._predrain = predrain
+        self._in_multi = False
+        # Guards this socket, and only this socket. A Connection is used by one
+        # thread at a time per docs/API.md section 6.4, so this is uncontended
+        # in normal use; it exists so that a *peer* sweeping this connection for
+        # invalidations can tell the difference between "between commands" and
+        # "mid-reply" without guessing. It is never held while any pool lock is,
+        # and it serialises one connection rather than command execution across
+        # the pool, which is the thing section 6.4 forbids.
+        self._io_lock = threading.RLock()
 
     def __repr__(self) -> str:
         state = "connected" if self._sock is not None else "disconnected"
@@ -251,16 +291,124 @@ class Connection:
         partially failed ``EXEC`` representable.
 
         Push frames arriving while this waits are discarded and reading
-        continues until a non push reply arrives.
+        continues until a non push reply arrives, except for ``invalidate``
+        frames on a caching connection, which are consumed.
+
+        With a pool cache configured, a read-only single-key command may be
+        served from cache and its reply may populate the cache. The ordering
+        below is the whole of the caching requirement and is not incidental:
+
+          - invalidations pending anywhere in the pool are consumed *before* a
+            hit is served, because the frame that makes this value stale
+            usually arrives on a connection this one does not own;
+          - the key's invalidation generation is recorded *before* the command
+            is sent, and the reply is offered back with it afterwards, so a
+            frame that arrived while the reply was in flight refuses the offer
+            rather than being processed after a stale entry is already
+            readable.
 
         Raises :exc:`ConnectionError` on a disconnected or poisoned connection.
-        It does not reconnect implicitly; reconnection is the pool's business.
         """
+        if not args:
+            raise ValueError("execute() requires at least a command name")
+
+        cache = self._cache
+        name = _encode_arg(args[0]).upper()
+        key = _encode_arg(args[1]) if len(args) >= 2 else None
+        cacheable = (
+            cache is not None
+            and key is not None
+            and not self._in_multi
+            and name in _CACHEABLE
+        )
+
+        encoded = b""
+        generation = (0, 0)
+        if cacheable:
+            assert cache is not None and key is not None
+            encoded = _encode_command(args)
+            # Another connection may be holding an unread invalidation for this
+            # key. Nothing here holds a lock while that is read.
+            if self._predrain is not None:
+                self._predrain(self)
+            self.drain_invalidations()
+            hit = cache.get(encoded)
+            if hit is not MISS:
+                return hit
+            generation = cache.generation(key)
+
         reply = self._roundtrip(args)
+
+        if name in _MULTI_ENTER:
+            self._in_multi = True
+        elif name in _MULTI_LEAVE:
+            self._in_multi = False
+
         error = unwrap(reply)
         if isinstance(error, ErrorReply):
             raise exception_for(error.code, error.message)
+
+        if cacheable:
+            assert cache is not None and key is not None
+            # An invalidation for this key may already be buffered behind the
+            # reply. Consuming it now is what turns the offer below into a
+            # refusal instead of a stale entry.
+            self.drain_invalidations()
+            cache.offer(encoded, key, reply, generation)
         return reply
+
+    def drain_invalidations(self, blocking: bool = True) -> int:
+        """Consume push frames already available on this socket. Never blocks on I/O.
+
+        Returns how many frames were consumed. Used two ways: by a caching
+        `execute` around the read it is about to trust, and by the pool to sweep
+        every connection it owns, because an invalidation arrives on whichever
+        connection read the key and that is rarely the one asking.
+
+        `blocking` governs the wait for this connection's own I/O lock, not for
+        the socket. A peer sweeps with `blocking=False`: if the owner is
+        mid-reply the sweep is skipped, which loses nothing, because a
+        connection mid-reply is already consuming its own invalidations as it
+        reads. If the owner is merely holding the connection between commands,
+        the sweep proceeds, which is the case that made this necessary.
+
+        Anything readable while the lock is held is out of band by construction.
+        A command reply appearing instead means the stream is desynchronised,
+        which poisons the connection rather than being ignored.
+        """
+        if self._sock is None or self._poisoned or self._cache is None:
+            return 0
+        if not self._io_lock.acquire(blocking):
+            return 0
+        try:
+            return self._drain_locked()
+        finally:
+            self._io_lock.release()
+
+    def _drain_locked(self) -> int:
+        if self._sock is None or self._poisoned:
+            return 0
+        seen = 0
+        while True:
+            try:
+                value = self._parser.gets()
+            except ProtocolError:
+                self._poisoned = True
+                raise
+            if value is NEED_MORE:
+                data = self._recv_ready()
+                if not data:
+                    return seen
+                self._parser.feed(data)
+                continue
+            if isinstance(value, PushMessage):
+                self._handle_push(value)
+                seen += 1
+                continue
+            self._poisoned = True
+            raise ProtocolError(
+                f"a command reply arrived with nothing waiting for it: {value!r}"
+            )
 
     def pipeline(self) -> "Pipeline":
         """Return a new :class:`~resp3_wire.pipeline.Pipeline` on this connection."""
@@ -313,6 +461,11 @@ class Connection:
             self._protocol_version = 2
             self._server_info = {}
 
+        if self._cache is not None:
+            # docs/API.md section 7A.3. After negotiation and before any
+            # command, so no reply can be cached before the server is willing to
+            # tell us it went stale.
+            self._roundtrip(("CLIENT", "TRACKING", "ON"))
         if self._db:
             self.execute("SELECT", self._db)
         if self._client_name is not None and self._protocol_version == 2:
@@ -337,8 +490,9 @@ class Connection:
                 "connection is poisoned; its stream position is unknown"
             )
         payload = _encode_command(args)
-        self._send(payload)
-        return self._read_reply()
+        with self._io_lock:
+            self._send(payload)
+            return self._read_reply()
 
     def _send(self, payload: bytes) -> None:
         assert self._sock is not None
@@ -369,9 +523,51 @@ class Connection:
                 self._parser.feed(self._recv())
                 continue
             if isinstance(value, PushMessage):
-                self._pushes_discarded += 1
+                self._handle_push(value)
                 continue
             return value
+
+    def _handle_push(self, message: PushMessage) -> None:
+        """Consume an invalidation, or discard any other push frame.
+
+        docs/API.md section 7A.4: an `invalidate` frame is consumed rather than
+        discarded and does not increment `pushes_discarded`; any other push
+        frame still does.
+        """
+        if self._cache is not None and message.kind == "invalidate":
+            payload = message.data[0] if message.data else None
+            if payload is None:
+                # A null in place of the key array means drop everything, which
+                # Redis sends on FLUSHALL and on tracking table overflow.
+                self._cache.invalidate_all()
+            else:
+                keys = payload if isinstance(payload, list) else [payload]
+                self._cache.invalidate(
+                    [k for k in keys if isinstance(k, (bytes, bytearray))]
+                )
+            return
+        self._pushes_discarded += 1
+
+    def _recv_ready(self) -> bytes:
+        """Whatever is already readable, or empty bytes if nothing is.
+
+        `select` with a zero timeout rather than a non-blocking recv, so the
+        socket's own timeout setting is left alone: it belongs to the blocking
+        reads that command execution depends on.
+        """
+        assert self._sock is not None
+        try:
+            ready, _, _ = select.select([self._sock], [], [], 0)
+            if not ready:
+                return b""
+            data = self._sock.recv(_RECV_SIZE)
+        except OSError as exc:
+            self._poisoned = True
+            raise ConnectionError(f"failed reading while draining: {exc}") from exc
+        if not data:
+            self._poisoned = True
+            raise ConnectionError("server closed the connection")
+        return data
 
     def _recv(self) -> bytes:
         assert self._sock is not None

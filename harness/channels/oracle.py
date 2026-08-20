@@ -1,4 +1,4 @@
-"""Channel 1: differential comparison against redis-py. 65 cases.
+"""Channel 1: differential comparison against redis-py. 55 cases.
 
 For each case the harness generates a random key prefix, runs a command
 sequence through the client and the same sequence through redis-py against the
@@ -102,13 +102,6 @@ def check_last(pair) -> tuple:
 # ===========================================================================
 
 
-def test_set_with_options(run_both) -> None:
-    """RESP2 designated."""
-    check_last(run_both(
-        lambda k: [("SET", k("k"), "first"), ("SET", k("k"), "second", "XX", "GET")],
-        protocol=2,
-    ))
-
 
 def test_get_on_a_missing_key(run_both) -> None:
     """RESP2 designated: a null bulk under RESP2, a null under RESP3."""
@@ -123,11 +116,6 @@ def test_append(run_both) -> None:
         protocol=2,
     ))
 
-
-def test_getrange(run_both) -> None:
-    check_last(run_both(
-        lambda k: [("SET", k("k"), "Hello wire protocol"), ("GETRANGE", k("k"), 6, 9)]
-    ))
 
 
 def test_incr(run_both) -> None:
@@ -186,13 +174,6 @@ def test_lpop_with_count(run_both) -> None:
     ))
 
 
-def test_linsert(run_both) -> None:
-    check_last(run_both(
-        lambda k: [("RPUSH", k("k"), "a", "c"),
-                   ("LINSERT", k("k"), "BEFORE", "c", "b"),
-                   ("LRANGE", k("k"), 0, -1)]
-    ))
-
 
 def test_lpos(run_both) -> None:
     check_last(run_both(
@@ -231,11 +212,6 @@ def test_hash_field_with_a_binary_name(run_both) -> None:
         protocol=2,
     ))
 
-
-def test_hstrlen(run_both) -> None:
-    check_last(run_both(
-        lambda k: [("HSET", k("k"), "f", "abcdef"), ("HSTRLEN", k("k"), "f")]
-    ))
 
 
 def test_hdel(run_both) -> None:
@@ -298,13 +274,6 @@ def test_sunion_is_a_list_under_resp2(run_both) -> None:
     )
 
 
-def test_sintercard(run_both) -> None:
-    check_last(run_both(
-        lambda k: [("SADD", k("s1"), "a", "b", "c"), ("SADD", k("s2"), "b", "c", "d"),
-                   ("SINTERCARD", 2, k("s1"), k("s2"))],
-        keys=("s1", "s2"),
-    ))
-
 
 def test_smismember(run_both) -> None:
     check_last(run_both(
@@ -316,12 +285,6 @@ def test_smismember(run_both) -> None:
 # Sorted sets, 6. RESP2 designated: ZADD, ZRANGE WITHSCORES, ZSCORE, infinity.
 # ===========================================================================
 
-
-def test_zadd(run_both) -> None:
-    """RESP2 designated."""
-    check_last(run_both(
-        lambda k: [("ZADD", k("k"), 1, "a", 2, "b")], protocol=2
-    ))
 
 
 def test_zrange_withscores_under_resp2(run_both) -> None:
@@ -381,9 +344,6 @@ def test_type(run_both) -> None:
     check_last(run_both(lambda k: [("RPUSH", k("k"), "a"), ("TYPE", k("k"))]))
 
 
-def test_ttl_on_a_persistent_key(run_both) -> None:
-    check_last(run_both(lambda k: [("SET", k("k"), "v"), ("TTL", k("k"))]))
-
 
 def test_ttl_on_a_missing_key(run_both) -> None:
     check_last(run_both(lambda k: [("TTL", k("k"))]))
@@ -422,28 +382,6 @@ def test_multi_exec_through_a_pipeline(agent3, oracle, prefix) -> None:
                        ("INCRBY", f"{prefix}:b:k", 0), ("EXEC",)])
     compare(results[3], expected[3])
 
-
-def test_exec_containing_a_per_command_error(run_both, agent2, prefix) -> None:
-    """RESP2 designated, and carries the D11 nested-error identity assertion.
-
-    A pipeline slot carries an exception; an error nested inside EXEC's array
-    stays an ErrorReply value. The asymmetry is deliberate and is the property
-    under test here.
-    """
-    key = f"{prefix}:a:k"
-    agent2.execute("UNLINK", key)
-    pipe = agent2.pipeline()
-    results = (pipe.push("MULTI").push("SET", key, "v")
-               .push("LPUSH", key, "x").push("EXEC").execute())
-    inner = results[3]
-    assert type(inner) is list and len(inner) == 2, f"EXEC array: {inner!r}"
-    assert isinstance(inner[1], ErrorReply), (
-        f"a per command error nested inside EXEC must stay an ErrorReply "
-        f"value, got {type(inner[1]).__name__}"
-    )
-    assert not isinstance(inner[1], BaseException), (
-        "a nested error must not be an exception instance"
-    )
 
 
 def test_discard(agent3, oracle, prefix) -> None:
@@ -780,28 +718,6 @@ def test_negotiation_pairs_a_flat_array_hello_reply() -> None:
             conn.close()
 
 
-def test_no_hello_is_written_under_protocol_2() -> None:
-    """With `protocol=2` no HELLO is sent at all.
-
-    Asserted on the bytes the server received, which is the only place the
-    absence of a write is observable.
-    """
-
-    def handler(args, index):
-        return b"+PONG\r\n"
-
-    with ScriptedServer(handler) as fake:
-        conn = Connection(port=fake.port, protocol=2, timeout=5.0)
-        conn.connect()
-        try:
-            assert conn.execute("PING") == b"PONG"
-            assert fake.command_names() == [b"PING"], (
-                f"a protocol=2 connection wrote {fake.command_names()!r}; it "
-                f"must write no HELLO"
-            )
-        finally:
-            conn.close()
-
 
 # ===========================================================================
 # Pipeline behavior, 3. docs/HARNESS.md section 3.2, docs/API.md section 7.
@@ -827,27 +743,6 @@ def test_pipeline_slot_carries_an_exception_instance(agent3, prefix) -> None:
         "a pipeline slot carries an exception, not an ErrorReply value"
     )
 
-
-def test_pipeline_preserves_order_across_mixed_reply_types(agent3, prefix) -> None:
-    """Replies come back in the order the commands were queued.
-
-    The replies differ in type at every position, so a batch returned in any
-    other order is visible without depending on the values themselves.
-    """
-    key = f"{prefix}:a:k"
-    agent3.execute("UNLINK", key)
-    results = (agent3.pipeline()
-               .push("SET", key, "v")            # simple string
-               .push("STRLEN", key)              # integer
-               .push("GET", key)                 # bulk string
-               .push("EXISTS", f"{key}:missing")  # integer 0
-               .push("TYPE", key)                # simple string
-               .execute())
-    shapes = [type(r).__name__ for r in results]
-    assert shapes == ["bytes", "int", "bytes", "int", "bytes"], (
-        f"replies came back as {shapes}, expected the queue order"
-    )
-    assert results == [b"OK", 1, b"v", 0, b"string"], f"out of order: {results!r}"
 
 
 def test_push_frame_mid_pipeline_consumes_no_slot(agent3) -> None:

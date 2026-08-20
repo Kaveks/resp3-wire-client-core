@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from types import TracebackType
 from typing import Any, Iterator
 
+from .cache import ReplyCache
 from .connection import Connection
 from .errors import ConnectionError, RedisError, TimeoutError
 
@@ -55,10 +56,22 @@ class ConnectionPool:
         protocol: int = 3,
         timeout: float | None = 5.0,
         health_check_interval: float = 0.0,
+        cache_size: int = 0,
         **connection_kwargs: Any,
     ) -> None:
         if max_connections < 1:
             raise ValueError(f"max_connections must be at least 1, got {max_connections!r}")
+        if cache_size < 0:
+            raise ValueError(f"cache_size must not be negative, got {cache_size!r}")
+        if cache_size and protocol != 3:
+            # docs/API.md section 7A.3. Under RESP2 the server has no channel on
+            # which to deliver an invalidation, so a cache there could only ever
+            # serve stale data. Refusing at construction is the only honest
+            # answer; the alternative is a cache that is silently wrong.
+            raise ValueError(
+                f"client-side caching requires protocol=3; got protocol={protocol!r} "
+                f"with cache_size={cache_size!r}"
+            )
         self._host = host
         self._port = port
         self._max_connections = max_connections
@@ -66,6 +79,9 @@ class ConnectionPool:
         self._timeout = timeout
         self._health_check_interval = health_check_interval
         self._connection_kwargs = connection_kwargs
+        # Pool-wide per D34, not per connection. The connection that receives an
+        # invalidation is usually not the connection that cached the value.
+        self._cache = ReplyCache(cache_size) if cache_size > 0 else None
 
         self._cond = threading.Condition()
         # (connection, monotonic timestamp of its last use)
@@ -222,6 +238,8 @@ class ConnectionPool:
             self._cond.notify_all()
         if already:
             return
+        # Section 7A.1: the counters reset only here.
+        self._cache = None
         for conn in doomed:
             conn.close()
 
@@ -244,6 +262,60 @@ class ConnectionPool:
         """Connections currently borrowed."""
         with self._cond:
             return len(self._in_use)
+
+    # -- client-side caching -----------------------------------------------
+
+    @property
+    def cache_stats(self) -> dict[str, int]:
+        """Hits, misses, invalidations, and current entry count.
+
+        Counters are monotonic and reset only on :meth:`close`. They exist so
+        the caching channel can observe that a cache is in use without reaching
+        into internals: a cache that never hits is indistinguishable from no
+        cache by result alone.
+        """
+        if self._cache is None:
+            return {"hits": 0, "misses": 0, "invalidations": 0, "entries": 0}
+        return self._cache.stats()
+
+    def cache_clear(self) -> None:
+        """Drop every cached entry. Counters are unaffected."""
+        if self._cache is not None:
+            self._cache.clear()
+
+    def _drain_peers(self, borrower: Connection) -> None:
+        """Consume invalidations sitting unread on every connection this pool owns.
+
+        This is the pool-wide half of the requirement, and D34 is why it cannot
+        be narrower. An invalidation for a key arrives on whichever connection
+        read that key, which is rarely the connection now asking for it. That
+        connection may be idle in the pool with nobody reading it, or held by a
+        worker that is between commands. Sweeping only the idle ones leaves the
+        second case serving stale values, which is what the "a worker holding a
+        connection does not block eviction" case exists to catch.
+
+        The pool's own lock is held only long enough to copy the set of
+        connections. Every socket read below happens with it released, because
+        `docs/API.md` section 6.4 forbids holding a lock across socket I/O and
+        section 7A.5 says cache correctness is not an exemption. Each connection
+        is swept under its own I/O lock, taken without blocking: a connection
+        mid-reply is skipped rather than waited for, and it is already consuming
+        its own invalidations as it reads.
+        """
+        if self._cache is None:
+            return
+        with self._cond:
+            if self._closed:
+                return
+            peers = [c for c in self._owned if c is not borrower]
+        for conn in peers:
+            try:
+                conn.drain_invalidations(blocking=False)
+            except RedisError:
+                # A peer that died while being swept is not this borrower's
+                # problem; it will be discarded when its holder next uses it or
+                # when the health check reaches it.
+                continue
 
     # -- context manager ---------------------------------------------------
 
@@ -272,6 +344,9 @@ class ConnectionPool:
                 "timeout": self._timeout,
             }
             kwargs.update(self._connection_kwargs)
+            if self._cache is not None:
+                kwargs["cache"] = self._cache
+                kwargs["predrain"] = self._drain_peers
             conn = Connection(self._host, self._port, **kwargs)
             conn.connect()
         except BaseException:

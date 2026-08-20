@@ -1,6 +1,11 @@
-# syntax=docker/dockerfile:1
-#
 # The shipped image.
+#
+# Deliberately no `# syntax=` directive. It would make the build fetch a
+# frontend image from Docker Hub before reading a single instruction, which is
+# one more thing that can fail in the build phase: it failed exactly that way
+# once here, on a TLS handshake timeout, with nothing wrong in the bundle.
+# BuildKit's built-in frontend handles the heredocs below, so the dependency
+# bought nothing.
 #
 # Everything the run needs is baked in at build time, because the rollout and
 # verification phases both have no network. That includes redis-server, both

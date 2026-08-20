@@ -37,6 +37,7 @@ class ConnectionPool:
         protocol: int = 3,
         timeout: float | None = 5.0,
         health_check_interval: float = 0.0,
+        cache_size: int = 0,
         **connection_kwargs: object,
     ) -> None:
         self._host = host
@@ -45,7 +46,23 @@ class ConnectionPool:
         self._protocol = protocol
         self._timeout = timeout
         self._health_check_interval = health_check_interval
+        self._cache_size = cache_size
         self._connection_kwargs = connection_kwargs
+
+    # -- client-side caching -----------------------------------------------
+
+    @property
+    def cache_stats(self) -> dict:
+        """Cache counters: ``hits``, ``misses``, ``invalidations``, ``entries``.
+
+        Counters are monotonic and reset only on :meth:`close`. See
+        `docs/API.md` section 7A.1, or Part 6 of the instructions.
+        """
+        raise NotImplementedError("ConnectionPool.cache_stats")
+
+    def cache_clear(self) -> None:
+        """Drop every cached entry. Counters are unaffected."""
+        raise NotImplementedError("ConnectionPool.cache_clear")
 
     # -- borrow and return -------------------------------------------------
 

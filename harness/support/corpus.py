@@ -130,19 +130,20 @@ def all_frames() -> bytes:
 # so that a single split position exercises a boundary inside a length prefix,
 # a format prefix, an attribute, and a nested aggregate.
 CURATED: list[tuple[str, bytes]] = [
-    ("aggregate of every scalar",
-     b"*7\r\n:1\r\n,2.5\r\n#t\r\n_\r\n" + blob(b"s")
-     + b"(12345678901234567890\r\n" + b",-inf\r\n"),
+    # D35 reduced the exhaustive line from 3 cases to 2. The two frames below
+    # carry between them every wire type the three carried, so no boundary this
+    # channel used to split inside has stopped being split inside.
+    ("every scalar beside a map, a set, a verbatim string and a blob error",
+     b"*4\r\n"
+     + b"*7\r\n:1\r\n,2.5\r\n#t\r\n_\r\n" + blob(b"s")
+     + b"(12345678901234567890\r\n" + b",-inf\r\n"
+     + b"%1\r\n" + blob(b"k") + b"~2\r\n:1\r\n"
+     + attr([(b"m", b"#f\r\n")]) + b":2\r\n"
+     + verbatim(b"txt", b"Some string") + blob_error(b"ERR a\r\nb")),
     ("attributed values at three depths",
      attr([(b"top", b":1\r\n")])
      + b"*2\r\n" + attr([(b"mid", b":2\r\n")]) + blob(b"a")
      + b"*1\r\n" + attr([(b"low", b":3\r\n")]) + blob(b"b")),
-    ("map holding a set holding an attributed member, beside a verbatim "
-     "string and a blob error",
-     b"*3\r\n"
-     + b"%1\r\n" + blob(b"k") + b"~2\r\n:1\r\n"
-     + attr([(b"m", b"#f\r\n")]) + b":2\r\n"
-     + verbatim(b"txt", b"Some string") + blob_error(b"ERR a\r\nb")),
 ]
 
 # Frames whose interesting split positions are known by construction. The

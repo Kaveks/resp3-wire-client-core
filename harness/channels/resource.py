@@ -1,4 +1,4 @@
-"""Channel 4: parser memory behaviour. 13 cases.
+"""Channel 5: parser memory behaviour. 11 cases.
 
 Holding a parsed value is not a defect: a bulk string of N bytes occupies N
 bytes once parsed. What is measured is overhead beyond that, and whether cost
@@ -129,7 +129,7 @@ def per_byte_cost(payload_size: int, trials: int = 5,
 
 
 # ---------------------------------------------------------------------------
-# Peak ratio at three payload sizes, fed whole. 3 cases.
+# Peak ratio at two payload sizes, fed whole. 2 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -138,10 +138,6 @@ def test_peak_ratio_1mb() -> None:
     assert ratio <= PEAK_RATIO_BOUND, f"peak ratio {ratio:.2f} exceeds {PEAK_RATIO_BOUND}"
 
 
-def test_peak_ratio_8mb() -> None:
-    ratio = peak_ratio(8 << 20)
-    assert ratio <= PEAK_RATIO_BOUND, f"peak ratio {ratio:.2f} exceeds {PEAK_RATIO_BOUND}"
-
 
 def test_peak_ratio_64mb() -> None:
     ratio = peak_ratio(64 << 20)
@@ -149,7 +145,7 @@ def test_peak_ratio_64mb() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Peak ratio under a chunked feed. 2 cases.
+# Peak ratio under a chunked feed. 1 case.
 # ---------------------------------------------------------------------------
 
 
@@ -160,13 +156,6 @@ def test_peak_ratio_chunked_1mb() -> None:
         f"{CHUNK} byte chunked feed"
     )
 
-
-def test_peak_ratio_chunked_8mb() -> None:
-    ratio = peak_ratio(8 << 20, chunked=True)
-    assert ratio <= PEAK_RATIO_BOUND, (
-        f"peak ratio {ratio:.2f} exceeds {PEAK_RATIO_BOUND} under a "
-        f"{CHUNK} byte chunked feed"
-    )
 
 
 # ---------------------------------------------------------------------------

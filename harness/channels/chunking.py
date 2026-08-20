@@ -1,4 +1,4 @@
-"""Channel 2: parser correctness and invariance. 26 cases.
+"""Channel 2: parser correctness and invariance. 22 cases.
 
 Two instruments, and D20 records why both are needed.
 
@@ -105,7 +105,7 @@ def one_byte_cuts(data: bytes) -> range:
 
 
 # ---------------------------------------------------------------------------
-# Absolute value expectations. 8 cases.
+# Absolute value expectations. 7 cases.
 #
 # docs/HARNESS.md section 4.1 and D20. These assert what a frame parses to,
 # against docs/PROTOCOL.md sections 3 and 4, with no parser on the other side of
@@ -118,14 +118,6 @@ def test_resp3_null_is_none() -> None:
     """`_\\r\\n`, the RESP3 null. docs/PROTOCOL.md section 4.6."""
     value = parse_one(b"_\r\n")
     assert value is None, f"`_` must produce None, got {value!r}"
-
-
-def test_resp2_null_bulk_is_none() -> None:
-    """`$-1\\r\\n`, accepted under both protocols and never an empty bytes."""
-    value = parse_one(b"$-1\r\n")
-    assert value is None, (
-        f"`$-1` must produce None, got {value!r} of type {type(value).__name__}"
-    )
 
 
 def test_resp2_null_array_is_none() -> None:
@@ -286,20 +278,18 @@ def test_consecutive_attributes_merge_with_later_keys_winning() -> None:
 
 
 # ---------------------------------------------------------------------------
-# One byte feeds. 4 cases: three sweeps over the corpus, and the delegation
+# One byte feeds. 3 cases: two sweeps over the corpus, and the delegation
 # property of docs/HARNESS.md section 4.4.
 # ---------------------------------------------------------------------------
 
 
-def test_one_byte_scalars() -> None:
-    data = corpus.group("resp2_scalars") + corpus.group("resp3_scalars")
-    assert_invariant(data, one_byte_cuts(data), " for RESP2 and RESP3 scalars")
-
-
-def test_one_byte_length_prefixed_and_nested() -> None:
-    data = corpus.group("length_prefixed") + corpus.group("nested_arrays")
+def test_one_byte_scalars_and_length_prefixed() -> None:
+    """D35 merged two sweeps into one. Every group is still fed a byte at a
+    time; what was lost is a second schedule over the same corpus, not a group."""
+    data = (corpus.group("resp2_scalars") + corpus.group("resp3_scalars")
+            + corpus.group("length_prefixed") + corpus.group("nested_arrays"))
     assert_invariant(data, one_byte_cuts(data),
-                     " for length prefixed frames and nested arrays")
+                     " for scalars, length prefixed frames, and nested arrays")
 
 
 def test_one_byte_aggregates_pushes_and_nulls() -> None:
@@ -329,7 +319,7 @@ def test_attributed_delegation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive split at every interior position. 3 cases.
+# Exhaustive split at every interior position. 2 cases.
 #
 # A frame of N bytes has exactly N-1 interior cut points, and each case runs
 # all of them. That is many partitions inside one case, which is appropriate:
@@ -344,7 +334,11 @@ def test_exhaustive_split(label: str, frame: bytes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Seeded random partitions. 4 cases.
+# Seeded random partitions. 3 cases.
+#
+# D35 dropped the sweep over the curated frames: those frames are split at
+# every interior position by the exhaustive cases, so a random schedule over
+# them adds a schedule and no property.
 #
 # The run seed plus the fixed regression seeds, so a green run is never purely
 # luck and a regression a random seed happens to miss is still caught.
@@ -368,12 +362,6 @@ def test_random_partitions_regression_seeds() -> None:
     data = corpus.all_frames()
     for seed in REGRESSION_SEEDS:
         _random_partition_sweep(data, random.Random(seed), rounds=25)
-
-
-def test_random_partitions_curated_frames(rng: random.Random) -> None:
-    source = random.Random(rng.getrandbits(64))
-    for _, frame in corpus.CURATED:
-        _random_partition_sweep(frame, source, rounds=40)
 
 
 def test_random_partitions_single_frames(rng: random.Random) -> None:

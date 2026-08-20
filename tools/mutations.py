@@ -38,6 +38,7 @@ __all__ = ["Mutation", "MUTATIONS", "by_name"]
 # oracle alone.
 
 ORACLE = "oracle"
+CACHING = "caching"
 CHUNKING = "chunking"
 POOL = "pool"
 RESOURCE = "resource"
@@ -406,10 +407,12 @@ add(
     [(
         "connection.py",
         """            if isinstance(value, PushMessage):
-                self._pushes_discarded += 1
-                continue""",
+                self._handle_push(value)
+                continue
+            return value""",
         """            if isinstance(value, PushMessage):
-                self._pushes_discarded += 1""",
+                self._handle_push(value)
+            return value""",
     )],
     note="docs/API.md section 4.3.",
 )
@@ -459,13 +462,19 @@ add(
     [
         ("connection.py", """        except OSError as exc:
             self._poisoned = True
-            raise ConnectionError(f"failed reading a reply: {exc}") from exc""",
+            raise ConnectionError(f"failed reading a reply: {exc}") from exc
+        if not data:""",
          """        except OSError as exc:
-            raise ConnectionError(f"failed reading a reply: {exc}") from exc"""),
-        ("connection.py", """        if not data:
+            raise ConnectionError(f"failed reading a reply: {exc}") from exc
+        if not data:"""),
+        # "server closed the connection" appears in both the blocking read and
+        # the non-blocking drain, so the anchor carries the line above it.
+        ("connection.py", """            raise ConnectionError(f"failed reading a reply: {exc}") from exc
+        if not data:
             self._poisoned = True
             raise ConnectionError("server closed the connection")""",
-         """        if not data:
+         """            raise ConnectionError(f"failed reading a reply: {exc}") from exc
+        if not data:
             raise ConnectionError("server closed the connection")"""),
         ("connection.py", """        except OSError as exc:
             self._poisoned = True
@@ -503,9 +512,13 @@ add(
         "connection.py",
         """            except ProtocolError:
                 self._poisoned = True
-                raise""",
+                raise
+            if value is NEED_MORE:
+                self._parser.feed(self._recv())""",
         """            except ProtocolError:
-                raise""",
+                raise
+            if value is NEED_MORE:
+                self._parser.feed(self._recv())""",
     )],
     note="docs/API.md section 6.3, third trigger. docs/HARNESS.md section 5.4 "
          "records that this trigger has no public induction path and that its "
@@ -885,6 +898,219 @@ add(
 )
 
 # ===========================================================================
+# Caching and invalidation. D33's channel.
+#
+# The first of these is the defect docs/API.md section 7A.5 names in so many
+# words: caching the value and processing the pending invalidation afterwards.
+# It is the reason the channel exists, and a caching mutation that fails nothing
+# is a defect in the channel rather than in the mutation.
+# ===========================================================================
+
+add(
+    "cache-stores-before-checking-for-invalidation",
+    "a reply is cached only if no invalidation for its key arrived while it was read",
+    [CACHING],
+    [(
+        "connection.py",
+        """            self.drain_invalidations()
+            cache.offer(encoded, key, reply, generation)""",
+        """            cache.offer(encoded, key, reply, generation)
+            self.drain_invalidations()""",
+    )],
+    note="docs/API.md section 7A.5. MEASURED: this fails nothing, and the reason "
+         "is worth keeping. The reordering still drains before `execute` "
+         "returns, so the stale entry exists only between the store and the "
+         "drain inside one call. That window is real and another thread can in "
+         "principle read through it, but it is microseconds wide and observing "
+         "it reliably would need instrumentation of internals, which "
+         "docs/HARNESS.md section 8.2 forbids. The observable form of the same "
+         "property is cache-serves-hits-without-draining-first below, which "
+         "fails. This entry is kept rather than deleted because a mutation that "
+         "cannot be caught is worth recording as such.",
+)
+
+add(
+    "cache-ignores-the-generation-it-recorded",
+    "an invalidation arriving during the read refuses the offer",
+    [CACHING],
+    [(
+        "cache.py",
+        """            if (self._epoch, self._generation.get(key, 0)) != generation:
+                return False""",
+        """            if False:
+                return False""",
+    )],
+    note="The generation check is the whole of the pre-cache race defence.",
+)
+
+add(
+    "cache-sweeps-only-idle-connections",
+    "invalidations are consumed from every connection, not only unborrowed ones",
+    [CACHING],
+    [(
+        "pool.py",
+        """            peers = [c for c in self._owned if c is not borrower]""",
+        """            idle = {c for c, _ in self._idle}
+            peers = [c for c in self._owned if c is not borrower and c in idle]""",
+    )],
+    note="D34. The connection holding an invalidation is often one a worker is "
+         "holding between commands. This is the defect the channel's "
+         "worker-holding-a-connection case was written for, and the reference "
+         "had it until that case failed.",
+)
+
+add(
+    "cache-never-sweeps-peers",
+    "a hit is served only after pending invalidations are consumed pool-wide",
+    [CACHING],
+    [(
+        "connection.py",
+        """            if self._predrain is not None:
+                self._predrain(self)
+            self.drain_invalidations()""",
+        """            self.drain_invalidations()""",
+    )],
+    note="Leaves the per-connection defence intact and removes the pool-wide one, "
+         "so only the cases that cross connections should notice.",
+)
+
+add(
+    "cache-serves-hits-without-draining-first",
+    "pending invalidations are consumed before a cached value is served",
+    [CACHING],
+    [(
+        "connection.py",
+        """            if self._predrain is not None:
+                self._predrain(self)
+            self.drain_invalidations()
+            hit = cache.get(encoded)""",
+        """            hit = cache.get(encoded)""",
+    )],
+    note="The observable form of the property above. An invalidation that has "
+         "arrived but not been parsed is exactly as stale as one that has not "
+         "arrived, and serving a hit without accounting for it is what "
+         "docs/API.md section 7A.5 forbids.",
+)
+
+add(
+    "invalidation-frame-ignored",
+    "an `invalidate` push frame evicts the keys it names",
+    [CACHING],
+    [(
+        "connection.py",
+        """        if self._cache is not None and message.kind == "invalidate":""",
+        """        if False:""",
+    )],
+    note="docs/API.md section 7A.4. The frame is discarded like any other push, "
+         "which also means pushes_discarded counts it.",
+)
+
+add(
+    "flush-invalidation-drops-nothing",
+    "a null key array means drop everything",
+    [CACHING],
+    [(
+        "cache.py",
+        """            dropped = len(self._entries)
+            self._entries.clear()
+            self._by_key.clear()
+            self._epoch += 1
+            return dropped""",
+        """            return 0""",
+    )],
+    note="docs/API.md section 7A.4, the FLUSHALL and table-overflow form.",
+)
+
+add(
+    "cache-tracking-never-enabled",
+    "each connection issues CLIENT TRACKING ON after negotiation",
+    [CACHING],
+    [(
+        "connection.py",
+        """            self._roundtrip(("CLIENT", "TRACKING", "ON"))""",
+        """            pass""",
+    )],
+    note="docs/API.md section 7A.3. Without tracking the server sends no "
+         "invalidation at all, so every cached value is stale the moment it is "
+         "written by anyone.",
+)
+
+add(
+    "cache-ignores-its-bound",
+    "the cache is bounded at cache_size entries",
+    [CACHING],
+    [(
+        "cache.py",
+        """            if command not in self._entries and len(self._entries) >= self._max:
+                oldest = next(iter(self._entries))
+                self._forget_locked(oldest)""",
+        """            pass""",
+    )],
+)
+
+add(
+    "cache-accepts-protocol-2",
+    "cache_size > 0 with protocol=2 raises ValueError",
+    [CACHING],
+    [(
+        "pool.py",
+        """        if cache_size and protocol != 3:""",
+        """        if False:""",
+    )],
+    note="docs/API.md section 7A.3. Under RESP2 there is no channel for an "
+         "invalidation, so such a cache can only ever be wrong.",
+)
+
+add(
+    "cache-serves-pipelined-reads",
+    "a pipelined read is neither served from cache nor populates it",
+    [CACHING],
+    [(
+        "pipeline.py",
+        """        results: list[object] = []
+        for _ in range(len(commands)):""",
+        """        cache = getattr(self._conn, "_cache", None)
+        if cache is not None:
+            served = []
+            for command in commands:
+                cached = cache.get(command)
+                if cached is not None and type(cached).__name__ != "_Miss":
+                    served.append(cached)
+            if len(served) == len(commands):
+                self._commands = []
+                return served
+        results: list[object] = []
+        for _ in range(len(commands)):""",
+    )],
+    note="docs/API.md section 7A.2. Reading through the cache from a pipeline "
+         "counts the hit, which is what the scope case observes.",
+)
+
+add(
+    "cache-clear-resets-the-counters",
+    "cache_clear drops entries and leaves the counters alone",
+    [CACHING],
+    [(
+        "cache.py",
+        """        with self._lock:
+            self._entries.clear()
+            self._by_key.clear()
+
+    def stats(self)""",
+        """        with self._lock:
+            self._entries.clear()
+            self._by_key.clear()
+            self._hits = 0
+            self._misses = 0
+            self._invalidations = 0
+
+    def stats(self)""",
+    )],
+    note="docs/API.md section 7A.1: counters are monotonic and reset only on close.",
+)
+
+
+# ===========================================================================
 # The sans-io gate, which is a precondition rather than a channel
 # ===========================================================================
 
@@ -974,13 +1200,14 @@ add(
     [ORACLE],
     [(
         "connection.py",
-        """        reply = self._roundtrip(args)
-        error = unwrap(reply)""",
-        """        reply = self._roundtrip(args)
-        if args and str(args[0]).upper() in ("SUNION", "SMEMBERS"):
-            if type(reply) is list:
-                reply = set(reply)
-        error = unwrap(reply)""",
+        """        error = unwrap(reply)
+        if isinstance(error, ErrorReply):
+            raise exception_for(error.code, error.message)""",
+        """        if name in (b"SUNION", b"SMEMBERS") and type(reply) is list:
+            reply = set(reply)
+        error = unwrap(reply)
+        if isinstance(error, ErrorReply):
+            raise exception_for(error.code, error.message)""",
     )],
     note="docs/HARNESS.md section 3.3. This is the defect the RESP2 SUNION "
          "designation exists to catch: a client that reimplements redis-py's "

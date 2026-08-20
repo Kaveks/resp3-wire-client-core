@@ -3,7 +3,8 @@
 Weights are realized through case counts rather than a weight table, so the
 50/20/20/10 split holds under a harness that scores as the fraction of tests
 passed and remains sensible under one that scores pass or fail. D19 scaled the
-counts to 65/26/26/13, which is the same split at 1.3 times the case count.
+counts to 65/26/26/13 and D35 redistributed them to 55/22/22/20/11 when the
+caching channel was added.
 
 Two outcomes are emitted, because the platform's mechanism for reading a
 continuous score is not yet confirmed: a JSON report, and a process exit code
@@ -35,13 +36,15 @@ sys.path.insert(0, str(HARNESS_DIR))
 from support.sansio import check_sansio  # noqa: E402
 
 # docs/HARNESS.md section 1. The counts are the weights. D19 scaled them by 1.3
-# from 50/20/20/10, holding the ratios, to open thirty slots for properties the
-# mutation suite found enforced by no case.
+# from 50/20/20/10 to open thirty slots for properties the mutation suite found
+# enforced by no case. D35 then redistributed the same 130 to make room for the
+# caching channel, which is where the difficulty added by D33 is graded.
 CHANNELS = {
-    "oracle": 65,
-    "chunking": 26,
-    "pool": 26,
-    "resource": 13,
+    "oracle": 55,
+    "chunking": 22,
+    "pool": 22,
+    "caching": 20,
+    "resource": 11,
 }
 TOTAL_CASES = sum(CHANNELS.values())
 

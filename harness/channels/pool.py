@@ -1,4 +1,4 @@
-"""Channel 3: pool integrity under concurrency. 26 cases.
+"""Channel 3: pool integrity under concurrency. 22 cases.
 
 Concurrent workers borrow from a shared pool, issue commands tagged with a per
 worker unique token, and assert that every reply carries their own token. A
@@ -162,7 +162,7 @@ def tagged_round(pool: ConnectionPool, worker: int, rounds: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Borrow, release, reuse, capacity. 5 cases.
+# Borrow, release, reuse, capacity. 4 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -174,15 +174,6 @@ def test_acquire_returns_a_live_connection(make_pool) -> None:
     assert pool.size == 1 and pool.in_use == 1 and pool.idle == 0
     pool.release(conn)
 
-
-def test_release_moves_a_connection_to_the_idle_set(make_pool) -> None:
-    """The bookkeeping. That the idle connection is then reused is asserted by
-    the idle-reuse cases below, so that neither case carries two properties."""
-    pool = make_pool(max_connections=2)
-    first = pool.acquire()
-    pool.release(first)
-    assert pool.idle == 1 and pool.in_use == 0
-    assert pool.size == 1, "releasing must not discard a healthy connection"
 
 
 def test_pool_grows_to_max_connections_and_no_further(make_pool) -> None:
@@ -245,7 +236,7 @@ def test_capacity_holds_under_concurrent_acquisition(make_pool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Health check and eviction. 4 cases.
+# Health check and eviction. 3 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -263,14 +254,6 @@ def test_health_check_evicts_a_dead_idle_connection(make_pool, side_channel) -> 
         "a connection killed while idle was handed out again"
     )
 
-
-def test_health_check_hands_back_a_usable_connection(make_pool) -> None:
-    pool = make_pool(max_connections=2, health_check_interval=HEALTH_INTERVAL)
-    conn = pool.acquire()
-    pool.release(conn)
-    await_interval(time.monotonic(), HEALTH_INTERVAL * 1.2)
-    checked = pool.acquire()
-    assert checked.execute("ECHO", b"after-health-check") == b"after-health-check"
 
 
 def test_health_check_disabled_by_default(make_pool) -> None:
@@ -460,7 +443,7 @@ def test_no_cross_talk_after_a_killed_connection_was_released(make_pool, side_ch
 
 
 # ---------------------------------------------------------------------------
-# Close and cleanup. 3 cases.
+# Close and cleanup. 2 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -534,37 +517,15 @@ def test_exhaustion_clears_once_a_connection_is_released(make_pool) -> None:
     )
 
 
-def test_release_after_close_is_a_discard_not_an_error(make_pool) -> None:
-    """D16. A borrower unwinding after another thread closed the pool.
-
-    Raising there would mask whatever exception the `with` block was already
-    propagating, so the release is a discard.
-    """
-    pool = make_pool(max_connections=2)
-    conn = pool.acquire()
-    pool.close()
-    pool.release(conn)  # must not raise
-    assert pool.size == 0, "a release after close must not repopulate the pool"
-
 
 # ---------------------------------------------------------------------------
-# Idle reuse is genuine. 3 cases.
+# Idle reuse is genuine. 2 cases.
 #
 # docs/HARNESS.md section 5.3. A pool that discards every connection on release,
 # or whose health check discards every connection it checks, passes every other
 # case in this channel because the replacement works too.
 # ---------------------------------------------------------------------------
 
-
-def test_an_idle_connection_is_reused_by_identity(make_pool) -> None:
-    """The same object comes back, rather than an equivalent replacement."""
-    pool = make_pool(max_connections=2)
-    first = pool.acquire()
-    pool.release(first)
-    again = pool.acquire()
-    assert again is first, (
-        "an idle connection must be reused, not replaced by a fresh one"
-    )
 
 
 def test_client_id_is_stable_across_a_borrow_release_borrow_cycle(make_pool) -> None:

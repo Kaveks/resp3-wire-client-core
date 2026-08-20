@@ -137,6 +137,24 @@ ATTACKS: list[Attack] = [
         overrides=("parser.py",),
     ),
     Attack(
+        name="cache_that_never_caches",
+        requirement="a cache that passes every freshness assertion trivially",
+        exploit=(
+            "The cache surface is present and its counters move, but nothing is "
+            "ever stored: `get` always misses and `offer` always refuses. Every "
+            "read therefore reaches the server and every freshness assertion in "
+            "the caching channel is satisfied by construction."
+        ),
+        defence=(
+            "docs/HARNESS.md section 6.3: a case asserting freshness passes "
+            "trivially against an implementation that caches nothing, so each "
+            "such case additionally asserts that hits occurred. That is D24 "
+            "applied to this channel."
+        ),
+        payoff="the whole caching channel without implementing a cache",
+        overrides=("cache.py",),
+    ),
+    Attack(
         name="serialised_pool",
         requirement="serialising all pool operations behind a single lock",
         exploit=(
