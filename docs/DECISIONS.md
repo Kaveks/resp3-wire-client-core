@@ -564,3 +564,34 @@ The suite stays at 130 with the weight redistributed:
 Ratios move from 50/20/20/10 to roughly 42/17/17/15/8. The oracle remains the
 largest single channel and the reduction is proportional across the other three,
 so no existing property loses relative weight against another.
+
+## D36. A store-then-drain reordering is unobservable and is accepted
+
+Ratified 2026-08-20. Third entry in the D21 class.
+
+`cache-stores-before-checking-for-invalidation` scores 130/130. The reordering
+leaves a stale entry visible only between two statements inside one `execute`
+call, a window microseconds wide, and observing it would require instrumenting
+internals, which `docs/HARNESS.md` section 8.2 forbids.
+
+The mutation is kept with the finding recorded rather than deleted, and
+`cache-serves-hits-without-draining-first` is the observable form of the same
+property; it fails 11 of 20 caching cases.
+
+Accepted uncovered properties now number three: `ProtocolError` poisoning has no
+public induction path, pipeline batching is byte-identical to a write-read loop,
+and this.
+
+## D37. release_after_close returns to the pool channel
+
+Ratified 2026-08-20.
+
+The D35 reductions dropped `release_after_close`, which was D16's only case. A
+release arriving after `close` being a discard rather than an error was a defect
+found by repeated runs and ratified deliberately; dropping the case that
+enforces it is a coverage regression rather than a reduction.
+
+It returns to the close-and-cleanup group. `test_close_is_idempotent` leaves in
+its place: closing twice is asserted incidentally by every case that closes a
+pool in teardown, which is the redundancy the D35 reductions were meant to
+target.

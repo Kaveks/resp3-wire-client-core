@@ -298,25 +298,28 @@ distinct protocol properties are untouched: error mapping keeps its 6, RESP3
 scalar coverage keeps its 7, and protocol and RESP3 keeps its 5, because each
 of those cases tests a wire type or a mapping that no other case reaches.
 
-The four type-identity cases introduced by D11 are drawn from this 65, not
+The four type-identity cases introduced by D11 are drawn from this 55, not
 added to it. `MOVED` parsing is one of them; the other three sit inside error
 mapping and transactions; the `type(result) is set` assertion is the `SMEMBERS`
-case. The suite totals exactly 130 across all channels and the 50/20/20/10 ratios
-hold at 65/26/26/13 per D19.
+case. The suite totals exactly 130 across all channels, at 55/22/22/20/11 per D35.
 
 Each enumeration below lists exactly as many items as its allocation. A case
 that runs under both protocols counts once here and is designated in section
 3.3, which draws its sixteen from these fifty rather than adding to them.
 
-Strings, 8: `SET` with options; `GET` on a missing key; `GETRANGE`; `APPEND`;
-`INCR`; `INCRBYFLOAT`; a binary safe value containing CRLF and NUL; an empty
-value.
+Strings, 6: `GET` on a missing key; `APPEND`; `INCR`; `INCRBYFLOAT`; a binary
+safe value containing CRLF and NUL; an empty value.
 
-Lists, 6: `RPUSH`; `LRANGE` over a large range; `LPOP` with count; `LINSERT`;
-`LPOS`; `LRANGE` on a missing key.
+`SET` with options and `GETRANGE` were dropped by D35. `SET` returns `+OK`
+under both protocols, so by section 3.3's own criterion its RESP2 designation
+tested nothing, and `GETRANGE` is a substring read whose shape `GET` covers.
 
-Hashes, 6: `HSET`; `HGETALL`; `HSTRLEN`; `HDEL`; `HEXPIRE`; a field with a
-binary name.
+Lists, 5: `RPUSH`; `LRANGE` over a large range; `LPOP` with count; `LPOS`;
+`LRANGE` on a missing key. `LINSERT` was dropped by D35 as an integer reply
+whose shape `RPUSH` covers.
+
+Hashes, 5: `HSET`; `HGETALL`; `HDEL`; `HEXPIRE`; a field with a binary name.
+`HSTRLEN` was dropped by D35 as an integer reply whose shape `HSET` covers.
 
 `HGETALL` is one of the three RESP2 designations in section 3.3, where it
 returns a flat array rather than a map. It is one case, run on a RESP2
@@ -326,9 +329,9 @@ connection.
 because the server is pinned at 7.4 per D12; a conditional case would break the
 fixed 100 case denominator.
 
-Sets, 5: `SADD`; `SMEMBERS` under RESP3, carrying the direct
-`type(result) is set` assertion per D11; `SINTERCARD`; `SMISMEMBER`; `SUNION`
-across three keys.
+Sets, 4: `SADD`; `SMEMBERS` under RESP3, carrying the direct
+`type(result) is set` assertion per D11; `SMISMEMBER`; `SUNION` across three keys. `SINTERCARD` was
+dropped by D35; `SMISMEMBER` keeps the array-of-integers shape.
 
 `SMEMBERS` is never designated RESP2. Its assertion is that a RESP3 `~` frame
 yields a Python `set`, which a RESP2 connection cannot exercise. The RESP2 side
@@ -336,11 +339,13 @@ of set handling is carried by `SUNION` per section 3.3.
 
 `SPOP` with count was removed as nondeterministic; `SMISMEMBER` replaces it.
 
-Sorted sets, 6: `ZADD`; `ZRANGE WITHSCORES`, where RESP3 gives doubles and
-RESP2 gives bulk strings; `ZSCORE`; `ZRANGEBYLEX`; `ZADD GT`; infinity scores.
+Sorted sets, 5: `ZRANGE WITHSCORES`, where RESP3 gives doubles and RESP2 gives
+bulk strings; `ZSCORE`; `ZRANGEBYLEX`; `ZADD GT`; infinity scores. Plain `ZADD`
+was dropped by D35 as an integer reply under both protocols.
 
-Keyspace, 5: `TYPE`; `TTL` on a persistent key; `TTL` on a missing key;
-`EXPIRETIME` on a volatile key; `OBJECT ENCODING`.
+Keyspace, 4: `TYPE`; `TTL` on a missing key; `EXPIRETIME` on a volatile key;
+`OBJECT ENCODING`. `TTL` on a persistent key was dropped by D35 as differing
+from the missing-key case only in the integer returned.
 
 `LCS` was listed in error and is removed; the five above are the allocation.
 
@@ -350,14 +355,16 @@ prefix scopable, `SCAN` order is cursor dependent, and two `TTL` reads straddle
 a second boundary. `EXPIRETIME` returns an absolute unix time and is stable
 across both reads.
 
-Transactions, 4: a successful `MULTI`/`EXEC` through a pipeline; an `EXEC`
-containing a per command error, which carries the D11 assertion that the nested
-error is an `ErrorReply` and not an exception; a `DISCARD`; a `WATCH` that
-aborts.
+Transactions, 4: a successful `MULTI`/`EXEC` through a pipeline; a `DISCARD`; a
+`WATCH` that aborts; and a batch carrying both halves of the error asymmetry,
+which holds the D11 assertion that a nested `EXEC` error is an `ErrorReply` and
+not an exception. The standalone per-command-error case was dropped by D35 as a
+strict subset of the both-halves case.
 
-Protocol and RESP3, 5: negotiated version under `protocol=3`; negotiated
-version under `protocol=2`; `server_info` contents after HELLO; `DEBUG PROTOCOL`
-for map and for array, one case covering both; a verbatim reply carrying the
+Protocol and RESP3, 5: negotiated version under `protocol=3`; negotiated version
+under `protocol=2`, which asserts `server_info == {}` and is what caught the
+corresponding mutation; `server_info` contents after HELLO; `DEBUG PROTOCOL` for
+map and for array, one case covering both; a verbatim reply carrying the
 `VerbatimBytes.format` assertion.
 
 A double reply is compared incidentally: `ZSCORE` is designated RESP2 per section
@@ -419,26 +426,30 @@ a RESP2 connection is wrong even where the values look better.
 
 That purpose constrains which cases are designated. A command whose reply shape
 is identical under both protocols tests nothing when designated RESP2, so the
-sixteen concentrate where the shape genuinely differs:
+thirteen concentrate where the shape genuinely differs:
 
     hashes         3   HGETALL flat array vs map; HSET; a binary field name
-    sorted sets    4   ZRANGE WITHSCORES flat array vs pairs; ZSCORE bulk
-                       string vs double; ZADD; infinity scores as strings
-    strings        3   GET on a missing key, null bulk vs null; SET; APPEND
+    sorted sets    3   ZRANGE WITHSCORES flat array vs pairs; ZSCORE bulk
+                       string vs double; infinity scores as strings
+    strings        3   GET on a missing key, null bulk vs null; APPEND; an
+                       empty value
     lists          2   LRANGE on a missing key, empty array; RPUSH
-    sets           2   SUNION as a flat array rather than a set, confirming
-                       the agent does NOT return a set under RESP2; SADD
+    sets           1   SUNION as a flat array rather than a set, confirming
+                       the agent does NOT return a set under RESP2
     protocol       1   negotiated version under protocol=2
-    transactions   1   EXEC with a nested error, ErrorReply under both
                   --
-                  16
+                  13
+
+D35's reductions removed three designations along with their cases: `SET` and
+`ZADD` returned identical shapes under both protocols and tested no degradation,
+and the standalone `EXEC` error case was subsumed.
 
 The sets designation is the subtle one. `SUNION` returns `~` under RESP3 and `*`
 under RESP2, so a correct client returns a `set` in the first case and a `list`
 in the second. An implementation that post-processes by command name rather than
 by wire type returns a `set` in both and fails here. This is the mirror of the
 RESP3 `type(result) is set` assertion on `SMEMBERS`, and the two cases are
-distinct: `SMEMBERS` is RESP3 only, `SUNION` is one of the sixteen RESP2
+distinct: `SMEMBERS` is RESP3 only, `SUNION` is one of the thirteen RESP2
 designations.
 
 Keyspace has no RESP2 designation. `TYPE`, `TTL`, `EXPIRETIME`, and
@@ -460,13 +471,17 @@ returns `1` for `#t` satisfies the invariant perfectly. The mutation suite
 confirmed seven such defects passing every invariance case despite the corpus
 containing the exact frames.
 
-The channel therefore carries eight absolute-expectation cases alongside the
+The channel therefore carries seven absolute-expectation cases alongside the
 invariance cases. Those assert what a frame parses to, against expectations
 written from `docs/PROTOCOL.md` sections 3 and 4, with no parser on the other
-side of the comparison. They cover: the three null forms distinctly, booleans as
-`bool` and not `int`, big numbers as `int`, a blob error whose payload contains
-CRLF, a push frame as `PushMessage` and not a list, and a verbatim string's
-stripped payload with its format retained.
+side of the comparison. They cover: the RESP3 null and the RESP2 null array,
+booleans as `bool` and not `int`, big numbers as `int`, a blob error whose
+payload contains CRLF, a push frame as `PushMessage` and not a list, and a
+verbatim string's stripped payload with its format retained.
+
+D35 dropped the RESP2 null-bulk case: the oracle asserts that mapping directly
+through a `GET` on a missing key, which is one of its thirteen RESP2
+designations.
 
 Equality here is stricter than the comparator's. It additionally compares
 `VerbatimBytes.format` and `Attributed.attributes`, reaching past delegating
@@ -594,7 +609,7 @@ rather than by mutating internals.
 `ProtocolError` poisoning has no public induction path and its case is
 reallocated. `execute` always emits well formed RESP, and a genuine protocol
 level rejection makes Redis close the connection, which surfaces as
-`ConnectionError` and duplicates the adjacent case. Section 7.2 forbids reaching
+`ConnectionError` and duplicates the adjacent case. Section 8.2 forbids reaching
 into internals, which closes the remaining route. The freed case asserts instead
 that a poisoned connection raises `ConnectionError` on any further `execute`,
 per `docs/API.md` section 6.3.
@@ -618,10 +633,12 @@ subclasses `ConnectionError`. The case polls the server back to readiness first,
 so the refusal it observes comes from the client's poisoned state and not from
 the socket.
 
-The three idle-reuse cases assert that a pool actually reuses connections rather
-than silently creating a fresh one each time: identity across sequential
-acquisitions, `CLIENT ID` stability across a borrow-release-borrow cycle, and
-`pool.size` remaining at one across ten such cycles. A pool that discards every
+The two idle-reuse cases assert that a pool actually reuses connections rather
+than silently creating a fresh one each time: `CLIENT ID` stability across a
+borrow-release-borrow cycle, and `pool.size` remaining at one across ten such
+cycles. D35 dropped the object-identity case in favour of `CLIENT ID`, which
+proves the same thing against the server rather than against Python object
+identity. A pool that discards every
 connection on release, or whose health check discards every connection it checks,
 otherwise passes every other case in this channel because the replacement works
 too.
@@ -720,7 +737,7 @@ stale value, which is a stronger claim than one attempt returning fresh.
 
 ## 7. Channel 5: resource behavior, 11 cases
 
-This is the weakest of the four channels and is weighted accordingly.
+This is the lowest weighted of the five channels.
 
 ### 7.1 What is measured
 
