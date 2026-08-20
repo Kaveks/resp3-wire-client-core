@@ -15,6 +15,7 @@
 #   environment/Dockerfile    the image
 #   environment/starter/      what the implementer starts from
 #   environment/visible_tests/
+#   environment/instruction.md  duplicated so COPY resolves in this context
 #   starter/                  the same, duplicated. See D30.
 #   visible_tests/
 #   tests/test.sh             verifier entrypoint
@@ -77,6 +78,11 @@ echo "  instruction.md      hash $actual"
 cp "$HERE/environment/Dockerfile" "$OUT/environment/Dockerfile"
 copy_tree "$HERE/starter/resp3_wire" "$OUT/environment/starter/resp3_wire"
 copy_tree "$HERE/visible_tests" "$OUT/environment/visible_tests"
+# The image carries the specification at /app/instruction.md, because an
+# implementer working in the container follows what it says and cannot follow a
+# document that is not there. Duplicated into the environment context for the
+# same reason starter/ is: COPY resolves relative to the context.
+cp "$HERE/spec/instruction.md" "$OUT/environment/instruction.md"
 # D30: the same inputs at the bundle root, so the Dockerfile's COPY paths
 # resolve under either build context. Written from the same source, never
 # edited apart, and compared by tools/check_paths.py.
@@ -92,7 +98,6 @@ for context in "$OUT" "$OUT/environment"; do
 tests/
 solution/
 task.toml
-instruction.md
 **/__pycache__/
 **/*.pyc
 IGNORE

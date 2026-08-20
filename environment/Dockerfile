@@ -121,7 +121,15 @@ WORKDIR /app
 # the bundle was verified end to end.
 RUN chown agent:agent /app
 COPY --chown=agent:agent starter/resp3_wire /app/resp3_wire
-COPY --chown=agent:agent visible_tests /app/visible_tests
+COPY --chown=agent:agent visible_tests /app/tests
+COPY --chown=agent:agent instruction.md /app/instruction.md
+
+# The specification names /app/tests and /app/instruction.md, and an
+# implementer working in this container follows what it says. A visible_tests
+# directory here would make `python -m pytest tests/` fail against a path the
+# spec told them to use, and a specification the container cannot show them is
+# a specification they cannot consult at the moment they need it.
+RUN rm -f /app/tests/.gitkeep
 
 ENV RESP3_ORACLE_PYTHON=/usr/local/bin/oracle-python \
     RESP3_REDIS_SERVER=/usr/local/bin/redis-server \
