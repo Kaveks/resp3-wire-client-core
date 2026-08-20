@@ -595,3 +595,70 @@ It returns to the close-and-cleanup group. `test_close_is_idempotent` leaves in
 its place: closing twice is asserted incidentally by every case that closes a
 pool in teardown, which is the redundancy the D35 reductions were meant to
 target.
+
+## D38. D37's named replacement did not exist; the matrix chose instead
+
+Ratified 2026-08-20. Corrects D37.
+
+D37 named `test_close_is_idempotent` as the case leaving the pool channel to
+make room for `release_after_close`. No such case exists: idempotence was a
+trailing line inside the close case, so removing it frees no slot.
+
+The replacement was chosen by ranking every pool case by how many of the 64
+mutations it catches. Exactly one catches zero, `test_acquire_returns_a_live_
+connection`, and its content is asserted incidentally by every other case in the
+channel. That is the redundancy D37 invoked, identified by measurement rather
+than by my guess.
+
+Two group totals in section 5.3 now depart from the table by one each, because
+the table was drawn against a case that does not exist. The channel total of 22
+and the suite total of 130 are unchanged, and those are the numbers the score
+depends on.
+
+The method generalises: a case catching no mutation is redundant by
+construction, and the matrix is the instrument for finding one.
+
+## D39. Defence in depth can make a mutation unobservable
+
+Ratified 2026-08-20. Fourth entry in the D21 class.
+
+`cache-ignores-the-generation-it-recorded` caught one case before the drain
+corrections and catches nothing after them. The generation check still matters:
+it is what stops a value being re-stored after an invalidation consumed during
+its own read has already evicted it. But reaching that window now requires an
+interleaving the harness can induce by racing and cannot establish by ordering,
+because a second mechanism covers the same ground.
+
+Strengthening the implementation is what made the mutation unobservable. The
+entry is kept with the finding in its note rather than deleted or contrived a
+catch for, because deleting it would lose the record that the property exists.
+
+Accepted uncovered properties now number four: `ProtocolError` poisoning,
+pipeline batching, the store-then-drain reordering of D36, and this.
+
+## D40. Two caching defects the flake budget found
+
+Ratified 2026-08-20.
+
+The acceptance bar failed 3 of 20 after the D37 swap, across three caching cases
+including two sequential ones. Per `CLAUDE.md` the reference was assumed wrong,
+and it was, twice.
+
+The invalidation drain abandoned a frame TCP had split. It stopped as soon as no
+further bytes were immediately available, even holding half an invalidation
+frame, so the eviction never happened and the entry stayed readable.
+`RespParser` gained `has_buffered_input` so the drain can distinguish nothing
+arriving from half of something arriving, and block for the remainder. That is
+safe because the server has committed to sending it and the socket timeout still
+bounds the wait.
+
+A hit was served despite a peer the sweep could not reach. A non-blocking drain
+skipped a connection whose owner held its lock, and the caller served the hit
+anyway. `_drain_peers` now reports whether the sweep was complete, and an
+incomplete sweep forces a miss. Waiting for the peer instead would couple one
+connection's cache hit to another's in-flight command, which section 6.4
+forbids; the miss is free under section 7A.5, which says serving a miss where a
+hit was possible is not a failure.
+
+Both were caught by the channel and neither was fixed by weakening a case. This
+is the flake budget working as designed: twenty runs found what one did not.

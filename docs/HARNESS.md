@@ -586,16 +586,21 @@ connections rather than handing the same one out repeatedly.
 
 ### 5.3 Allocation
 
-    borrow, release, reuse, capacity         4
+    borrow, release, reuse, capacity         3
     health check and eviction                3
     poisoning: connection, timeout, post-poison 3
     concurrent utilization and distinct ids   2
     cross-talk under injected timeouts        4
-    close and cleanup semantics               2
+    close and cleanup semantics               3
     capacity exhaustion raises TimeoutError   2
     idle reuse is genuine                     2
                                              --
                                              22
+
+Close-and-cleanup carries three because D37 returned `release_after_close`, the
+only case enforcing D16. Borrow-release-reuse carries three because the matrix
+identified its fourth as catching none of the 64 mutations; D38 records the
+method.
 
 D35 reduced this from 26. Poisoning, concurrent utilization, and cross-talk are
 untouched: they carry the properties this channel exists for, and the mutation
