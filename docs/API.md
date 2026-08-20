@@ -419,10 +419,107 @@ because they are nested rather than top level.
 This asymmetry is deliberate and is specified rather than incidental: pipeline
 slots carry exceptions, nested aggregate positions carry `ErrorReply`.
 
+## 7A. Client-side caching
+
+Opt-in, off by default, and graded by its own channel. Every other section of
+this document describes behavior with caching disabled.
+
+### 7A.1 Surface
+
+    ConnectionPool(..., cache_size: int = 0, **connection_kwargs)
+
+`cache_size` of 0 disables caching entirely, which is the default and the
+configuration every other channel exercises. A positive value enables it and
+bounds the cache at that many entries.
+
+    ConnectionPool.cache_stats -> dict
+
+Returns `{"hits": int, "misses": int, "invalidations": int, "entries": int}`.
+Counters are monotonic and reset only on `close`. They exist because the caching
+channel must observe cache behavior without reaching into internals, and because
+a cache that never hits is indistinguishable from no cache by result alone.
+
+    ConnectionPool.cache_clear() -> None
+
+Drops every entry. Counters are unaffected.
+
+### 7A.2 What is cached
+
+Only replies to read-only commands issued through `execute`, and only when the
+command has exactly one key in position 1. That covers `GET`, `HGET`, `LRANGE`,
+`SMEMBERS`, `TYPE`, `STRLEN`, and their kind.
+
+Nothing else is cached: no write command, no multi-key command, no command
+issued through a `Pipeline`, no command inside `MULTI`. The narrowing is
+deliberate. Deciding which commands are cacheable is a lookup table, and a
+lookup table is not what this requirement is about.
+
+The cache key is the full encoded command, so `GET k` and `GETRANGE k 0 -1` are
+distinct entries even though both read `k`.
+
+A cached hit returns a value equal to what the server would have returned. The
+comparison the channel makes is against the server, not against a previous
+reply.
+
+### 7A.3 Tracking
+
+When caching is enabled, each connection issues `CLIENT TRACKING ON` after
+negotiation and before any command. Caching requires `protocol=3`: under RESP2
+the server has no channel on which to deliver an invalidation, so a
+`ConnectionPool` constructed with `cache_size > 0` and `protocol=2` raises
+`ValueError`.
+
+### 7A.4 Invalidation
+
+The server sends `>2\r\n$10\r\ninvalidate\r\n*N\r\n...` naming keys whose
+cached values are now stale. A null in place of the key array means the client
+should drop everything, which Redis sends on `FLUSHALL` and on tracking table
+overflow.
+
+An invalidation frame received on any connection evicts the matching entries
+from the pool's cache, not from that connection's view of it. This is the
+requirement, and D34 records why: the connection that receives an invalidation
+is usually not the connection that cached the value.
+
+`Connection.pushes_discarded` counts frames a non-caching connection dropped.
+With caching enabled an `invalidate` frame is consumed rather than discarded and
+does not increment that counter; any other push frame still does.
+
+### 7A.5 The requirement the channel grades
+
+**A cached read must never return a value the server has already invalidated.**
+
+An invalidation may arrive at any point, including in the socket buffer before
+the reply that would populate the cache is fully read, during an unrelated
+command on the same connection, or on another connection while this one is
+mid-read. Whichever way it arrives, a subsequent read of that key must not be
+served from cache.
+
+Consequences worth stating, because they are where implementations diverge:
+
+Reading a reply is not the same as being clear to cache it. If an invalidation
+for the key is already buffered when the reply is parsed, caching the value and
+then processing the invalidation is correct only if the eviction actually
+happens before the next read; caching it and processing the invalidation later
+is not.
+
+The pool must not hold a lock across socket I/O to make this work. Section 6.4
+already forbids that and the pool channel's barrier case already enforces it.
+Cache correctness is not an exemption.
+
+A connection that is idle in the pool still has a socket with unread bytes on
+it. Invalidations arriving for keys it read do not stop arriving because nobody
+is borrowing it.
+
+Serving a stale value is a failure. Serving a miss where a hit was possible is
+not: the channel asserts that hits occur, so a cache that never caches fails,
+but it never asserts that a specific read was a hit.
+
 ## 8. What is not in scope
 
 No pubsub. No cluster support beyond parsing `MOVED` into a typed error. No
-async interface. No TLS. No command-specific methods; `execute` and `push` take
+async interface. No TLS. No caching of writes, multi-key commands, pipelined
+commands, or anything inside `MULTI`; see section 7A.2. No command-specific methods; `execute` and `push` take
 raw command arguments. No response decoding to `str`.
 
 `MovedError` exposing `slot` and `address` is the full extent of cluster

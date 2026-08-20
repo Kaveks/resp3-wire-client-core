@@ -13,10 +13,11 @@ behavior; this document defines how correctness is observed.
     harness/
       run.py                 orchestrator, emits the score
       channels/
-        oracle.py            65 cases  differential comparison against redis-py
-        chunking.py          26 cases  parser correctness and invariance
-        pool.py              26 cases  pool integrity under concurrency
-        resource.py          13 cases  parser memory behavior
+        oracle.py            55 cases  differential comparison against redis-py
+        chunking.py          22 cases  parser correctness and invariance
+        pool.py              22 cases  pool integrity under concurrency
+        caching.py           20 cases  invalidation correctness
+        resource.py          11 cases  parser memory behavior
       support/
         redis_boot.py        server lifecycle
         compare.py           the comparator
@@ -30,10 +31,13 @@ Weights are realized through case counts rather than a weight table, so the
 50/20/20/10 split holds under a harness that scores as fraction of tests
 passed and remains sensible under one that scores pass/fail.
 
-The suite totals 130 cases: 65, 26, 26, 13. Those are the same ratios as
-50/20/20/10 scaled by 1.3. The scaling is recorded as D19 and exists because
-the mutation suite established that thirty properties these contracts require
-were enforced by no case at 100.
+The suite totals 130 cases: 55, 22, 22, 20, 11. D19 scaled the original
+50/20/20/10 to 130 because the mutation suite found thirty required properties
+enforced by no case. D35 then redistributed to make room for the caching
+channel, after two blind trials scored 130 and 129 and established the task as
+saturated. The oracle remains the largest channel and the reduction is
+proportional across the other three, so no existing property loses relative
+weight against another.
 
 ## 2. The comparator
 
@@ -252,7 +256,7 @@ allocation.
 `DEBUG PROTOCOL` is gated in Redis 7 by the `enable-debug-command`
 configuration, which every server invocation passes per D10.
 
-## 3. Channel 1: differential oracle, 65 cases
+## 3. Channel 1: differential oracle, 55 cases
 
 ### 3.1 Method
 
@@ -273,20 +277,26 @@ global flush.
 
 ### 3.2 Allocation
 
-    strings                 8
-    lists                   6
-    hashes                  6
-    sets                    5
-    sorted sets             6
-    keyspace and generic    5
-    transactions            5
+    strings                 6
+    lists                   5
+    hashes                  5
+    sets                    4
+    sorted sets             5
+    keyspace and generic    4
+    transactions            4
     protocol and RESP3      5
     error mapping           6
     RESP3 scalar coverage   7
-    negotiation paths       3
-    pipeline behavior       3
+    negotiation paths       2
+    pipeline behavior       2
                            --
-                           65
+                           55
+
+D35 reduced this from 65. The reductions come from the command-family groups,
+which had the most redundancy across similar commands. The groups carrying
+distinct protocol properties are untouched: error mapping keeps its 6, RESP3
+scalar coverage keeps its 7, and protocol and RESP3 keeps its 5, because each
+of those cases tests a wire type or a mapping that no other case reaches.
 
 The four type-identity cases introduced by D11 are drawn from this 65, not
 added to it. `MOVED` parsing is one of them; the other three sit inside error
@@ -400,7 +410,7 @@ not go through the live server.
 
 ### 3.3 What the RESP2 half tests
 
-Sixteen of the sixty-five cases run against a `protocol=2` connection with a
+Thirteen of the fifty-five cases run against a `protocol=2` connection with a
 `protocol=2` redis-py. They are drawn from the fifty, not added to them.
 
 Their purpose is degradation fidelity: under RESP2 a hash reply is a flat array
@@ -435,7 +445,7 @@ Keyspace has no RESP2 designation. `TYPE`, `TTL`, `EXPIRETIME`, and
 `OBJECT ENCODING` return identical shapes under both protocols, so designating
 one would consume a case without testing degradation.
 
-## 4. Channel 2: chunking, 26 cases
+## 4. Channel 2: chunking, 22 cases
 
 ### 4.1 The invariant, and its limit
 
@@ -477,14 +487,20 @@ from a file.
 
 ### 4.3 Allocation
 
-    absolute value expectations             8
+    absolute value expectations             7
     attribute semantics                     4
-    one byte feeds, per type group          4
-    exhaustive split at every position      3
-    seeded random partitions                4
+    one byte feeds, per type group          3
+    exhaustive split at every position      2
+    seeded random partitions                3
     pathological boundaries                 3
                                            --
-                                           26
+                                           22
+
+D35 reduced this from 26. Attribute semantics and pathological boundaries are
+untouched: the first is the sole enforcement of attribute handling per D11, and
+the second covers split positions no other case reaches. The reductions come
+from cases that sweep the same corpus under a different schedule, where losing
+one schedule loses coverage of no property.
 
 The exhaustive cases take a small curated frame and feed it split at position
 `i` for every `i` from 1 to `len(frame) - 1`, asserting the invariant at each.
@@ -527,7 +543,7 @@ This is separated out because the property is load-bearing for callers and
 because a failure here should read as what it is rather than as an unrelated
 set comparison failure elsewhere.
 
-## 5. Channel 3: pool integrity, 26 cases
+## 5. Channel 3: pool integrity, 22 cases
 
 ### 5.1 Method
 
@@ -555,16 +571,20 @@ connections rather than handing the same one out repeatedly.
 
 ### 5.3 Allocation
 
-    borrow, release, reuse, capacity         5
-    health check and eviction                4
+    borrow, release, reuse, capacity         4
+    health check and eviction                3
     poisoning: connection, timeout, post-poison 3
-    concurrent utilization and distinct ids  2
-    cross-talk under injected timeouts       4
-    close and cleanup semantics              3
-    capacity exhaustion raises TimeoutError  2
-    idle reuse is genuine                    3
-                                            --
-                                            26
+    concurrent utilization and distinct ids   2
+    cross-talk under injected timeouts        4
+    close and cleanup semantics               2
+    capacity exhaustion raises TimeoutError   2
+    idle reuse is genuine                     2
+                                             --
+                                             22
+
+D35 reduced this from 26. Poisoning, concurrent utilization, and cross-talk are
+untouched: they carry the properties this channel exists for, and the mutation
+suite showed the cross-talk cases catching defects the others miss.
 
 ### 5.4 Poisoning
 
@@ -606,11 +626,103 @@ connection on release, or whose health check discards every connection it checks
 otherwise passes every other case in this channel because the replacement works
 too.
 
-## 6. Channel 4: resource behavior, 13 cases
+## 6. Channel 4: caching and invalidation, 20 cases
+
+### 6.1 What this channel grades
+
+One requirement, stated in `docs/API.md` section 7A.5: a cached read must never
+return a value the server has already invalidated.
+
+Everything else in the caching surface exists so this can be observed. The
+channel does not grade cache design, eviction policy, or hit rate.
+
+### 6.2 Why it is a separate channel
+
+redis-py implements client-side caching with its own semantics, so a cached read
+compared against redis-py would test whether the agent reimplemented redis-py's
+cache. That is the trap D11 exists to prevent, and D35 records the decision.
+
+Expectations here come from the server directly. A case writes a key, reads it
+through the caching pool, changes it by another route, and asserts the next read
+does not return the old value. The server is the authority; the agent's earlier
+reply is not.
+
+### 6.3 Method
+
+Every case runs against a live server with `CLIENT TRACKING` in play. The shape
+is always the same: establish a cached value, invalidate it by a route the
+caching client does not control, then read again and compare against the server.
+
+Invalidation is induced through a second, non-caching connection, so the write
+that invalidates never passes through the code under test. A client that
+invalidates on its own writes and nothing else fails every case here.
+
+`cache_stats` is read to confirm the cache is actually in use. A case asserting
+freshness passes trivially against an implementation that caches nothing, so
+each such case additionally asserts that hits occurred somewhere in the run.
+That is the D24 rule applied here: an assertion whose success is reachable
+without the property holding is not an assertion.
+
+### 6.4 Allocation
+
+    the cache works at all                      3
+    invalidation by another client              4
+    invalidation racing the read                4
+    invalidation across pooled connections      4
+    scope and configuration                     3
+    flush and overflow                          2
+                                               --
+                                               20
+
+**The cache works at all**, 3: a repeated read hits; `cache_stats` reflects hits
+and misses; `cache_clear` empties the cache and a subsequent read misses.
+
+**Invalidation by another client**, 4: a key cached then written by a second
+connection is not served stale; the same for deletion; the same for expiry; and
+`cache_stats["invalidations"]` increments.
+
+**Invalidation racing the read**, 4: the write lands between the reply being
+sent and the reply being parsed, so the invalidation is already in the socket
+buffer when the value would be cached; the write lands while an unrelated
+command occupies the connection; the write lands while the connection sits idle
+in the pool; and a burst of writes during a burst of reads leaves no stale value
+readable afterwards.
+
+These four are the channel. An implementation that caches a value and processes
+the pending invalidation afterwards passes the first group and fails here.
+
+**Invalidation across pooled connections**, 4: a value cached through connection
+A is invalidated by a frame arriving on connection B; concurrent workers reading
+the same key see no stale value after a write; a worker holding a connection
+does not block another worker's eviction; and eviction happens without any lock
+being held across socket I/O, asserted by the same barrier construction the pool
+channel uses.
+
+**Scope and configuration**, 3: `cache_size=0` caches nothing; `cache_size > 0`
+with `protocol=2` raises `ValueError`; and a pipelined read is not served from
+cache and does not populate it.
+
+**Flush and overflow**, 2: `FLUSHALL` from another client drops every entry, and
+a cache filled past `cache_size` evicts without ever serving a stale value.
+
+### 6.5 Determinism
+
+No case sleeps to let an invalidation arrive. Every case that depends on
+ordering uses a barrier or an explicit round trip through the second connection,
+so the sequence is established rather than hoped for.
+
+The racing cases are the ones most likely to flake. Each establishes its
+ordering by a `WAIT`-style round trip or by reading back through the second
+connection before the assertion, so the invalidation is known to have been sent
+before the read under test happens. Where that is not achievable the case
+retries a bounded number of times and asserts that no attempt ever returned a
+stale value, which is a stronger claim than one attempt returning fresh.
+
+## 7. Channel 5: resource behavior, 11 cases
 
 This is the weakest of the four channels and is weighted accordingly.
 
-### 6.1 What is measured
+### 7.1 What is measured
 
 Holding a parsed value is not a defect. A bulk string of N bytes occupies N
 bytes once parsed. The requirement is bounded overhead.
@@ -646,17 +758,23 @@ process, none of which the implementation controls.
 times and the minimum ratio is taken, which removes the effect of an
 interpreter level allocation happening to land inside the window.
 
-### 6.2 Allocation
+### 7.2 Allocation
 
-    peak ratio at 1 MB, 8 MB, 64 MB payloads        3
-    peak ratio under 4 KB chunked feed              2
+    peak ratio at 1 MB and 64 MB payloads           2
+    peak ratio under 4 KB chunked feed              1
     reset() releases buffered state                 1
     drained buffer is released                      1
     pipeline of 10k small replies does not grow     1
     deep nesting completes without recursion        2
     scaling behavior under chunked feed             3
                                                    --
-                                                   13
+                                                   11
+
+D35 reduced this from 13. The 8 MB peak-ratio case and one chunked-feed case
+are dropped as intermediate points between measurements that remain. The
+nesting cases and all three scaling cases are untouched: the second nesting
+case is what caught a recursive parser in the Sonnet 5 blind trial, and the
+scaling cases are the only complexity discriminator this suite has.
 
 The `reset()` case asserts that after feeding a partial large frame and calling
 `reset`, retained bytes fall below 10 percent of the payload size.
@@ -701,9 +819,9 @@ Sizes are measured independently, never interleaved. D14 records why: paired
 interleaved trials couple through allocator state and the resulting ratio reads
 the allocator rather than the algorithm.
 
-## 7. Determinism and seeds
+## 8. Determinism and seeds
 
-### 7.1 Seed discipline
+### 8.1 Seed discipline
 
 Randomness appears in three places: key generation in the oracle, chunk
 partitions in the chunking channel, and interleaving in the pool channel.
@@ -723,12 +841,12 @@ seeds on every run: `1`, `2`, `31337`, and `2 ** 32 - 1`. These catch a
 regression that a random seed happens to miss, and they mean a green run is
 never purely luck.
 
-### 7.2 What may not be used
+### 8.2 What may not be used
 
 No `time.sleep` as synchronization. Use `threading.Barrier` and `Event`.
 
 No absolute wall clock threshold as a correctness assertion. Relative scaling
-ratios are permitted under D14, and only under D14; the two channel 4 scaling
+ratios are permitted under D14, and only under D14; the three channel 5 scaling
 cases are their sole sanctioned use.
 
 No assertion on the ordering of concurrent operations beyond what the contract
@@ -742,7 +860,7 @@ The sans-io check is a precondition and holds no case allocation, but unlike the
 probe its failure is the implementation's fault: a violation scores zero across
 all channels rather than aborting as a configuration error.
 
-### 7.3 Flake budget
+### 8.3 Flake budget
 
 The acceptance bar is 20 consecutive clean full suite runs against the
 reference implementation, with a fresh seed each run. A single failure in 20
@@ -750,7 +868,7 @@ means the responsible channel is redesigned, not retried.
 
 `tools/flake_budget.sh` runs this and reports the seed of any failing run.
 
-## 8. Execution bounds
+## 9. Execution bounds
 
     server startup readiness poll     bounded, 50 attempts at 100 ms
     per case timeout                  30 s
@@ -768,12 +886,13 @@ reached through `tests/test.sh`, on a private port with persistence
 disabled, polled for readiness, flushed, and torn down. The harness never
 assumes a server already exists and never uses the default port.
 
-## 9. Open items
+## 10. Open items
 
 None. O1, O2, and O3 were resolved and ratified on 2026-08-18.
 
 O1: relative time ratios are permitted as a narrow exception to the timing
-rule, for detecting quadratic buffer churn in channel 4. D9 ratified this;
+rule, for detecting quadratic buffer churn in the resource channel, which D35
+renumbered from 4 to 5. D9 ratified this;
 D14 superseded its formulation after measurement showed the two-point ratio
 reads allocator state rather than complexity class.
 

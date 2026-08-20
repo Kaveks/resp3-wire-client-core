@@ -426,11 +426,73 @@ as one element of the result list. Per command errors inside that array are
 level. Pipeline slots carry exceptions; nested aggregate positions carry
 `ErrorReply`.
 
+## Part 6: client-side caching
+
+Off by default. Everything above describes behavior with caching disabled, and
+that is the configuration most of the checking uses.
+
+    ConnectionPool(..., cache_size=0)
+
+    cache_stats -> dict     {"hits", "misses", "invalidations", "entries"}
+    cache_clear() -> None   drops every entry; counters unaffected
+
+`cache_size` of 0 disables caching. A positive value enables it and bounds the
+cache at that many entries. Counters are monotonic and reset only on `close`.
+
+Caching requires `protocol=3`: under RESP2 the server has no channel on which to
+deliver an invalidation. `cache_size > 0` with `protocol=2` raises `ValueError`.
+
+### What is cached
+
+Replies to read-only commands issued through `execute`, and only where the
+command has exactly one key, in position 1. `GET`, `HGET`, `LRANGE`, `SMEMBERS`,
+`TYPE`, `STRLEN` and their kind.
+
+Nothing else. No write command, no multi-key command, nothing issued through a
+`Pipeline`, nothing inside `MULTI`. The cache key is the full encoded command,
+so `GET k` and `GETRANGE k 0 -1` are separate entries.
+
+### Tracking
+
+With caching enabled, each connection issues `CLIENT TRACKING ON` after
+negotiation and before any command. The server then sends a push frame naming
+keys whose cached values have gone stale:
+
+    >2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nfoo\r\n
+
+A null in place of the key array means drop everything. Redis sends that on
+`FLUSHALL` and when its tracking table overflows.
+
+An `invalidate` frame is consumed rather than discarded, so it does not
+increment `pushes_discarded`. Any other push frame still does.
+
+### The requirement
+
+**A cached read must never return a value the server has already invalidated.**
+
+That is the whole of it, and it is harder than it reads.
+
+An invalidation is not delivered in response to anything you did. It arrives on
+whichever connection was tracking the key, at whatever moment the server chooses,
+including in the socket buffer before you have finished parsing the reply that
+would populate the cache, or during an unrelated command, or while the
+connection sits idle in the pool with nobody reading it.
+
+The cache is pool-wide, so the connection that receives an invalidation is
+usually not the connection that cached the value. Eviction has to reach shared
+state across connections, under concurrency, and the rule from Part 4 still
+holds: no lock may be held across socket I/O.
+
+Serving a stale value is a failure. Serving a miss where a hit was possible is
+not. You are not graded on hit rate, but a cache that never caches is not a
+cache, and the checking asserts that hits occur.
+
 ## Out of scope
 
 No pubsub. No cluster support beyond parsing `MOVED` into a typed error, with
 no redirect following. No async interface. No TLS. No command-specific methods.
-No decoding to `str`.
+No decoding to `str`. No caching of writes, multi-key commands, pipelined
+commands, or anything inside `MULTI`.
 
 ## How your work is checked
 

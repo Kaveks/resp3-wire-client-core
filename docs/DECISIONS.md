@@ -62,7 +62,8 @@ Ratified 2026-08-18. Resolves O2 of PROTOCOL.md.
 Ratified 2026-08-18. Resolves O1 of HARNESS.md.
 SUPERSEDED by D14 on 2026-08-18. The permission stands; the specific metric
 below does not. Do not implement the bound stated here.
-Absolute wall clock assertions remain prohibited. Channel 4 may assert
+Absolute wall clock assertions remain prohibited. The resource channel, which
+was channel 4 until D35 renumbered it to 5, may assert
 T(8MB)/T(1MB) < 16.0, minimum of 5 trials, against an ideal linear 8.0 and a
 quadratic 64.0. This is the only sanctioned use; any new one requires
 ratification.
@@ -406,7 +407,7 @@ execute them by path, and to run a negative control for each before the check
 itself, per D26.
 
 Writing those controls exposed a fifth gap. "pytest-timeout is installed" is not
-the claim `docs/HARNESS.md` section 8 makes; the claim is that a case exceeding
+the claim `docs/HARNESS.md` section 9 makes; the claim is that a case exceeding
 30 seconds is killed. The control now runs a 45-second case and observes it
 terminated at 30.9 seconds.
 
@@ -492,3 +493,74 @@ correct to any check comparing the two numbers for equality.
 rather than asserting the figure. The same applies to every value the bundle
 derives from a contract: the check is of the mapping, not of the result, because
 a result can agree with its source and still be wrong.
+
+## D33. The task gains client-side caching
+
+Ratified 2026-08-20.
+
+Two blind trials established that the task is saturated. Opus 5 scored 130/130
+in 29 minutes and Sonnet 5 scored 129/130 in 20, both against a four-hour
+budget. The single miss was a generator-based parser exceeding the recursion
+limit, which the resource channel caught correctly.
+
+The verifier is not the problem. The mutation suite proved every channel fails
+independently, and the resource channel demonstrated that live. The problem is
+that `spec/instruction.md` names every trap explicitly, so avoiding them
+requires competent implementation rather than discovery, and both models are
+competent implementers.
+
+Client-side caching is added because its difficulty survives full
+specification. The requirement is stateable in a paragraph; meeting it is not,
+because invalidation arrives asynchronously on a channel the client is not
+reading at the time. A `GET` returns a value while the invalidation for that
+key may already sit in the socket buffer, may arrive during the next command,
+or may arrive while another thread is mid-read. An implementation that checks
+for invalidations only between commands serves stale data. So does one that
+caches before confirming no invalidation is pending. Under a pool with
+concurrent workers the window widens.
+
+That is a race a specification can require the resolution of without describing
+it, which is what the previous feature set lacked.
+
+## D34. The cache is pool-wide, not per-connection
+
+Ratified 2026-08-20.
+
+A per-connection cache is simpler and weaker: an invalidation arriving on the
+connection that cached the value is straightforward to handle, and the hard case
+never arises.
+
+Pool-wide is where the difficulty lives. Redis sends an invalidation to every
+tracking client that read the key, but a pooled client reads through whichever
+connection it borrowed, so the invalidation for a value cached by worker A can
+arrive on the connection worker B is holding. Correct eviction therefore
+requires the connection that receives an invalidation to reach shared state it
+does not own, under concurrency, without holding a lock across socket I/O, which
+`docs/API.md` section 6.4 already forbids.
+
+## D35. Caching gets its own channel; the oracle is untouched
+
+Ratified 2026-08-20.
+
+redis-py implements client-side caching with its own semantics. Comparing a
+cached read against it would test whether the agent reimplemented redis-py's
+cache rather than whether the protocol works, which is the trap D11 exists to
+prevent.
+
+Caching is opt-in through a constructor argument and off by default, so every
+existing oracle case runs against a non-caching connection and its behavior is
+unchanged. Correctness is graded by a fifth channel with expectations written
+from `docs/API.md` and verified against observable server state, never against
+redis-py.
+
+The suite stays at 130 with the weight redistributed:
+
+    oracle      55   was 65
+    chunking    22   was 26
+    pool        22   was 26
+    caching     20   new
+    resource    11   was 13
+
+Ratios move from 50/20/20/10 to roughly 42/17/17/15/8. The oracle remains the
+largest single channel and the reduction is proportional across the other three,
+so no existing property loses relative weight against another.
