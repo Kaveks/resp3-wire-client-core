@@ -329,12 +329,14 @@ class Connection:
             encoded = _encode_command(args)
             # Another connection may be holding an unread invalidation for this
             # key. Nothing here holds a lock while that is read.
+            swept = True
             if self._predrain is not None:
-                self._predrain(self)
+                swept = self._predrain(self)
             self.drain_invalidations()
-            hit = cache.get(encoded)
-            if hit is not MISS:
-                return hit
+            if swept:
+                hit = cache.get(encoded)
+                if hit is not MISS:
+                    return hit
             generation = cache.generation(key)
 
         reply = self._roundtrip(args)
@@ -357,10 +359,13 @@ class Connection:
             cache.offer(encoded, key, reply, generation)
         return reply
 
-    def drain_invalidations(self, blocking: bool = True) -> int:
+    def drain_invalidations(self, blocking: bool = True) -> bool:
         """Consume push frames already available on this socket. Never blocks on I/O.
 
-        Returns how many frames were consumed. Used two ways: by a caching
+        Returns whether the sweep happened at all, not how much it found:
+        the caller needs to know whether this socket has been accounted for, and
+        finding nothing on it is an answer while not having looked is not. Used
+        two ways: by a caching
         `execute` around the read it is about to trust, and by the pool to sweep
         every connection it owns, because an invalidation arrives on whichever
         connection read the key and that is rarely the one asking.
@@ -377,13 +382,14 @@ class Connection:
         which poisons the connection rather than being ignored.
         """
         if self._sock is None or self._poisoned or self._cache is None:
-            return 0
+            return True
         if not self._io_lock.acquire(blocking):
-            return 0
+            return False
         try:
-            return self._drain_locked()
+            self._drain_locked()
         finally:
             self._io_lock.release()
+        return True
 
     def _drain_locked(self) -> int:
         if self._sock is None or self._poisoned:
@@ -396,7 +402,15 @@ class Connection:
                 self._poisoned = True
                 raise
             if value is NEED_MORE:
-                data = self._recv_ready()
+                if self._parser.has_buffered_input:
+                    # Half a frame is already in. TCP split it, and the rest is
+                    # on its way: the server has committed to sending it. Giving
+                    # up here leaves the invalidation unprocessed and the entry
+                    # it should have evicted readable, which is how a purely
+                    # sequential case was observed serving a stale value.
+                    data = self._recv_rest_of_frame()
+                else:
+                    data = self._recv_ready()
                 if not data:
                     return seen
                 self._parser.feed(data)
@@ -547,6 +561,27 @@ class Connection:
                 )
             return
         self._pushes_discarded += 1
+
+    def _recv_rest_of_frame(self) -> bytes:
+        """Wait for the remainder of a frame already part-way in.
+
+        Blocking is correct here in a way it is not in `_recv_ready`: the bytes
+        are not speculative. The socket's own timeout still bounds it, so a
+        server that dies mid-frame poisons the connection rather than hanging it.
+        """
+        assert self._sock is not None
+        try:
+            data = self._sock.recv(_RECV_SIZE)
+        except socket.timeout as exc:
+            self._poisoned = True
+            raise TimeoutError("timed out mid-frame while draining") from exc
+        except OSError as exc:
+            self._poisoned = True
+            raise ConnectionError(f"failed reading while draining: {exc}") from exc
+        if not data:
+            self._poisoned = True
+            raise ConnectionError("server closed the connection mid-frame")
+        return data
 
     def _recv_ready(self) -> bytes:
         """Whatever is already readable, or empty bytes if nothing is.

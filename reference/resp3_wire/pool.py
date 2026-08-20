@@ -283,7 +283,7 @@ class ConnectionPool:
         if self._cache is not None:
             self._cache.clear()
 
-    def _drain_peers(self, borrower: Connection) -> None:
+    def _drain_peers(self, borrower: Connection) -> bool:
         """Consume invalidations sitting unread on every connection this pool owns.
 
         This is the pool-wide half of the requirement, and D34 is why it cannot
@@ -301,21 +301,32 @@ class ConnectionPool:
         is swept under its own I/O lock, taken without blocking: a connection
         mid-reply is skipped rather than waited for, and it is already consuming
         its own invalidations as it reads.
+
+        Returns whether every peer was actually swept. A peer that was skipped
+        may be holding an invalidation nobody has read, so the caller must not
+        serve a cached value on the strength of an incomplete sweep. Waiting for
+        that peer instead would couple one connection's cache hit to another
+        connection's in-flight command, which is the coupling section 6.4
+        forbids; taking the miss costs nothing, because section 7A.5 says
+        serving a miss where a hit was possible is not a failure.
         """
         if self._cache is None:
-            return
+            return True
         with self._cond:
             if self._closed:
-                return
+                return True
             peers = [c for c in self._owned if c is not borrower]
+        complete = True
         for conn in peers:
             try:
-                conn.drain_invalidations(blocking=False)
+                if not conn.drain_invalidations(blocking=False):
+                    complete = False
             except RedisError:
                 # A peer that died while being swept is not this borrower's
                 # problem; it will be discarded when its holder next uses it or
                 # when the health check reaches it.
                 continue
+        return complete
 
     # -- context manager ---------------------------------------------------
 

@@ -292,6 +292,17 @@ class RespParser:
             self._pos = 0
             self._scan_from = 0
 
+    @property
+    def has_buffered_input(self) -> bool:
+        """Whether bytes have been fed that have not yet produced a value.
+
+        True means a frame is part-way in: more bytes were fed than the values
+        drained account for. A caller draining out-of-band frames needs this to
+        tell "nothing has arrived" from "half of something has arrived", because
+        those call for opposite responses.
+        """
+        return self._pos < len(self._buf)
+
     def reset(self) -> None:
         """Discard all buffered state and return to the initial condition.
 

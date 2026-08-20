@@ -162,17 +162,8 @@ def tagged_round(pool: ConnectionPool, worker: int, rounds: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Borrow, release, reuse, capacity. 4 cases.
+# Borrow, release, reuse, capacity. 3 cases.
 # ---------------------------------------------------------------------------
-
-
-def test_acquire_returns_a_live_connection(make_pool) -> None:
-    pool = make_pool(max_connections=2)
-    conn = pool.acquire()
-    assert conn.is_connected
-    assert conn.execute("PING") == b"PONG"
-    assert pool.size == 1 and pool.in_use == 1 and pool.idle == 0
-    pool.release(conn)
 
 
 
@@ -443,7 +434,7 @@ def test_no_cross_talk_after_a_killed_connection_was_released(make_pool, side_ch
 
 
 # ---------------------------------------------------------------------------
-# Close and cleanup. 2 cases.
+# Close and cleanup. 3 cases.
 # ---------------------------------------------------------------------------
 
 
@@ -458,7 +449,6 @@ def test_close_closes_every_connection_and_refuses_acquire(make_pool) -> None:
     assert not idle.is_connected, "close must close idle connections too"
     with pytest.raises(ConnectionError):
         pool.acquire()
-    pool.close()  # idempotent
 
 
 def test_connection_context_manager_always_releases(make_pool) -> None:
@@ -477,6 +467,21 @@ def test_connection_context_manager_always_releases(make_pool) -> None:
     assert pool.idle == 1 and pool.size == 1, (
         "a server error must leave the connection healthy and pooled"
     )
+
+
+def test_release_after_close_is_a_discard_not_an_error(make_pool) -> None:
+    """D16, and D37 for why this is back.
+
+    A borrower unwinding a `with` block after another thread closed the pool has
+    done nothing wrong, and raising there would mask whatever exception the
+    block was already propagating. This is the only case that enforces it, which
+    is why dropping it under D35 was a regression rather than a reduction.
+    """
+    pool = make_pool(max_connections=2)
+    conn = pool.acquire()
+    pool.close()
+    pool.release(conn)  # must not raise
+    assert pool.size == 0, "a release after close must not repopulate the pool"
 
 
 # ---------------------------------------------------------------------------

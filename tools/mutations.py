@@ -940,7 +940,16 @@ add(
         """            if False:
                 return False""",
     )],
-    note="The generation check is the whole of the pre-cache race defence.",
+    note="MEASURED: this caught one case before the flake budget forced two "
+         "corrections to the reference, and catches nothing after them. The "
+         "check still matters -- it is what stops a value being re-stored after "
+         "an invalidation consumed during its own read already evicted it -- but "
+         "reaching that window needs the invalidation to interleave with the "
+         "reply, which the harness can induce only by racing and not by "
+         "establishing an order. Same class as D36: a real property whose "
+         "violation the public surface cannot be made to show reliably. "
+         "Strengthening the implementation is what made it unobservable, which "
+         "is worth knowing about defence in depth.",
 )
 
 add(
@@ -965,10 +974,12 @@ add(
     [CACHING],
     [(
         "connection.py",
-        """            if self._predrain is not None:
-                self._predrain(self)
+        """            swept = True
+            if self._predrain is not None:
+                swept = self._predrain(self)
             self.drain_invalidations()""",
-        """            self.drain_invalidations()""",
+        """            swept = True
+            self.drain_invalidations()""",
     )],
     note="Leaves the per-connection defence intact and removes the pool-wide one, "
          "so only the cases that cross connections should notice.",
@@ -980,11 +991,19 @@ add(
     [CACHING],
     [(
         "connection.py",
-        """            if self._predrain is not None:
-                self._predrain(self)
+        """            swept = True
+            if self._predrain is not None:
+                swept = self._predrain(self)
             self.drain_invalidations()
-            hit = cache.get(encoded)""",
-        """            hit = cache.get(encoded)""",
+            if swept:
+                hit = cache.get(encoded)
+                if hit is not MISS:
+                    return hit""",
+        """            swept = True
+            if swept:
+                hit = cache.get(encoded)
+                if hit is not MISS:
+                    return hit""",
     )],
     note="The observable form of the property above. An invalidation that has "
          "arrived but not been parsed is exactly as stale as one that has not "
