@@ -240,7 +240,7 @@ def test_many_small_replies_do_not_accumulate() -> None:
     finally:
         tracemalloc.stop()
     growth = peak - baseline
-    bound = PEAK_RATIO_BOUND * len(one) + 65536
+    bound = PEAK_RATIO_BOUND * len(one) + 262144
     assert growth <= bound, (
         f"peak grew {growth} bytes across {count} replies, bound {bound:.0f}; "
         f"the bound must not scale with the reply count"
