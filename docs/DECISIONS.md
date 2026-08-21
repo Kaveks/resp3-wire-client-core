@@ -662,3 +662,27 @@ hit was possible is not a failure.
 
 Both were caught by the channel and neither was fixed by weakening a case. This
 is the flake budget working as designed: twenty runs found what one did not.
+
+## D41. Widening a bound without checking the workload made a case unfailable
+
+Ratified 2026-08-21. Fifth entry in the D26 class, and the first introduced
+while fixing something else.
+
+A blind trial exceeded the pipeline case's 64 KB slack by 4 percent, which was
+allocator variation rather than accumulation, so the slack was widened to 256 KB
+to stop it flaking against our own reference in the oracle stage.
+
+The workload was not checked. The case fed 14 byte replies 10,000 times, so
+total input was 140 KB and a parser retaining every byte it was ever fed topped
+out near 155 KB. Under the wider slack the case could not fail at all. The
+mutation that targets the property, `consumed-input-never-released`, passed it.
+
+The fix is the workload, not the bound. At 1 KB replies the reference grows
+2.8 KB and the mutant grows 11.4 MB, a separation of four thousand times, with
+the 256 KB of allocator headroom intact.
+
+Two things generalise. A bound is meaningful only relative to the workload it
+bounds, so widening one without re-deriving the other is not a loosening but a
+removal. And D26 held under the one condition that matters: the change was
+verified by running the mutation rather than by reasoning about it, which is why
+this is a paragraph rather than a defect in the submitted bundle.

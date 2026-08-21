@@ -812,9 +812,15 @@ and fully draining a large frame, and dropping the returned value, retained byte
 must fall below 10 percent of the payload. A parser that never releases consumed
 input fails it.
 
-The pipeline case feeds 10,000 small replies, draining and discarding after
-each. Peak retained must not exceed 3.0 times a single reply's size plus 256 KB
-of slack.
+The pipeline case feeds 10,000 one-kilobyte replies, draining and discarding
+after each. Peak retained must not exceed 3.0 times a single reply's size plus
+256 KB of slack.
+
+The reply size is part of the assertion, not an incidental choice. At 14 bytes a
+reply the total input is 140 KB, so a parser retaining every byte it is ever fed
+tops out near 155 KB and cannot breach a 256 KB slack by any margin: the case
+becomes unfailable rather than merely permissive. At 1 KB the reference grows
+2.8 KB and a parser that never releases consumed input grows 11.4 MB.
 
 The slack absorbs interpreter level allocation and is not itself a threshold. A
 blind trial implementation exceeded a 64 KB slack by 4 percent, which is
