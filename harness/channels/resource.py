@@ -46,6 +46,18 @@ TRIALS = 3
 # cannot fail.
 RETAINED_FRACTION = 0.1
 
+# docs/HARNESS.md section 6.2 and D41. The reply size is part of the pipeline
+# case's assertion, not an incidental choice: the slack below is meaningful only
+# relative to the total input the case feeds. At 14 bytes a reply the total was
+# 140 KB, so a parser retaining every byte it was ever fed topped out near
+# 155 KB and could not breach the slack at all. At 1 KB the reference grows
+# 2.8 KB and a parser that never releases consumed input grows 11.4 MB.
+PIPELINE_REPLY_SIZE = 1024
+PIPELINE_COUNT = 10_000
+# Absorbs interpreter level allocation. Not itself a threshold: the separation
+# it has to discriminate is four thousand fold.
+PIPELINE_SLACK = 262144
+
 
 def build_frame(payload_size: int) -> bytes:
     return b"$%d\r\n" % payload_size + b"x" * payload_size + b"\r\n"
@@ -224,9 +236,9 @@ def test_drained_buffer_is_released() -> None:
 
 
 def test_many_small_replies_do_not_accumulate() -> None:
-    """Peak across 10,000 small replies is bounded by a constant, not by count."""
-    one = b"$8\r\nabcdefgh\r\n"
-    count = 10_000
+    """Peak across 10,000 one-kilobyte replies is bounded by a constant, not by count."""
+    one = build_frame(PIPELINE_REPLY_SIZE)
+    count = PIPELINE_COUNT
     gc.collect()
     tracemalloc.start()
     try:
@@ -240,10 +252,10 @@ def test_many_small_replies_do_not_accumulate() -> None:
     finally:
         tracemalloc.stop()
     growth = peak - baseline
-    bound = PEAK_RATIO_BOUND * len(one) + 262144
+    bound = PEAK_RATIO_BOUND * len(one) + PIPELINE_SLACK
     assert growth <= bound, (
-        f"peak grew {growth} bytes across {count} replies, bound {bound:.0f}; "
-        f"the bound must not scale with the reply count"
+        f"peak grew {growth} bytes across {count} replies of {len(one)} bytes, "
+        f"bound {bound:.0f}; the bound must not scale with the reply count"
     )
 
 
